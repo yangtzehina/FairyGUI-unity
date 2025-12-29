@@ -662,7 +662,7 @@ namespace FairyGUI
         }
 
         /// <summary>
-        /// 
+        ///
         /// </summary>
         public bool fairyBatching
         {
@@ -680,6 +680,87 @@ namespace FairyGUI
                 }
             }
         }
+
+        #region Mesh Batching
+
+        private MeshBatcher _meshBatcher;
+        private GenerationalBatcher _generationalBatcher;
+
+        /// <summary>
+        /// 启用 Mesh 合并批处理
+        /// 将同材质的 UI 元素合并为单个 Mesh，大幅减少 DrawCall
+        /// 适合静态或低频变化的 UI
+        /// </summary>
+        public bool meshBatching
+        {
+            get { return (_flags & Flags.MeshBatching) != 0; }
+            set
+            {
+                bool oldValue = (_flags & Flags.MeshBatching) != 0;
+                if (oldValue != value)
+                {
+                    if (value)
+                    {
+                        _flags |= Flags.MeshBatching;
+                        if (_meshBatcher == null)
+                            _meshBatcher = new MeshBatcher(cachedTransform);
+                    }
+                    else
+                    {
+                        _flags &= ~Flags.MeshBatching;
+                        if (_meshBatcher != null)
+                        {
+                            _meshBatcher.Dispose();
+                            _meshBatcher = null;
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// 启用分代批处理
+        /// 借鉴分代 GC 思想，自动识别稳定的 UI 元素进行 Mesh 合并
+        /// 适合混合动态和静态内容的 UI
+        /// </summary>
+        public bool generationalBatching
+        {
+            get { return (_flags & Flags.GenerationalBatching) != 0; }
+            set
+            {
+                bool oldValue = (_flags & Flags.GenerationalBatching) != 0;
+                if (oldValue != value)
+                {
+                    if (value)
+                    {
+                        _flags |= Flags.GenerationalBatching;
+                        if (_generationalBatcher == null)
+                            _generationalBatcher = new GenerationalBatcher(cachedTransform);
+                    }
+                    else
+                    {
+                        _flags &= ~Flags.GenerationalBatching;
+                        if (_generationalBatcher != null)
+                        {
+                            _generationalBatcher.Dispose();
+                            _generationalBatcher = null;
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// 获取分代批处理器（用于调整参数）
+        /// </summary>
+        public GenerationalBatcher generationalBatcher => _generationalBatcher;
+
+        /// <summary>
+        /// 获取 Mesh 批处理器
+        /// </summary>
+        public MeshBatcher meshBatcher => _meshBatcher;
+
+        #endregion
 
         internal void UpdateBatchingFlags()
         {

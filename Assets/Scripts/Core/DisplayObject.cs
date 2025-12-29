@@ -1897,7 +1897,9 @@ namespace FairyGUI
             SkipBatching = 0x10000,
             CacheAsBitmap = 0x20000,
             GameObjectDisposed = 0x40000,
-            DisposedWarning = 0x80000
+            DisposedWarning = 0x80000,
+            MeshBatching = 0x100000,
+            GenerationalBatching = 0x200000
         }
     }
 

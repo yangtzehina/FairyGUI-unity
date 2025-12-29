@@ -87,7 +87,13 @@ namespace FairyGUI
         MaterialPropertyBlock _propertyBlock;
         bool _blockUpdated;
 
-        internal BatchElement _batchElement;
+        internal BatchElement _batchElement;  // 现有 FairyBatching 系统需要
+
+        // 分代批处理相关字段
+        internal int _generation;           // 当前代: 0=年轻代, 1=中间代, 2=老年代
+        internal int _stableFrameCount;     // 稳定帧计数
+        internal bool _isDirtyThisFrame;    // 本帧是否变化
+        internal bool _isBatched;           // 是否已被批处理合并
 
         /// <summary>
         /// 
@@ -846,6 +852,65 @@ namespace FairyGUI
             newGraphics._vertexMatrix = _vertexMatrix;
             return newGraphics;
         }
+
+        #region Batch Export Methods
+
+        /// <summary>
+        /// 导出顶点数据用于批处理合并
+        /// </summary>
+        /// <param name="worldMatrix">世界变换矩阵</param>
+        /// <returns>包含顶点数据的 VertexBuffer，调用者需要调用 End() 归还</returns>
+        public VertexBuffer ExportVertices(Matrix4x4 worldMatrix)
+        {
+            if (_texture == null || _meshFactory == null)
+                return null;
+
+            VertexBuffer vb = VertexBuffer.Begin();
+            vb.contentRect = _contentRect;
+            vb.uvRect = _texture.uvRect;
+            vb.vertexColor = new Color32(
+                (byte)(_color.r * 255),
+                (byte)(_color.g * 255),
+                (byte)(_color.b * 255),
+                (byte)(_color.a * _alpha * 255)
+            );
+
+            _meshFactory.OnPopulateMesh(vb);
+
+            // 变换顶点到世界坐标
+            int vertCount = vb.vertices.Count;
+            for (int i = 0; i < vertCount; i++)
+            {
+                vb.vertices[i] = worldMatrix.MultiplyPoint3x4(vb.vertices[i]);
+            }
+
+            return vb;
+        }
+
+        /// <summary>
+        /// 设置批处理状态
+        /// </summary>
+        /// <param name="batched">是否被批处理</param>
+        public void SetBatchedState(bool batched)
+        {
+            _isBatched = batched;
+            if (meshRenderer != null)
+            {
+                // 被批处理时禁用独立渲染
+                meshRenderer.enabled = !batched;
+            }
+        }
+
+        /// <summary>
+        /// 标记本帧有变化（用于分代批处理）
+        /// </summary>
+        internal void MarkDirtyForBatching()
+        {
+            _isDirtyThisFrame = true;
+            _stableFrameCount = 0;
+        }
+
+        #endregion
 
         class StencilEraser
         {

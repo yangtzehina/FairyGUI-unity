@@ -85,22 +85,14 @@ Shader "FairyGUI/Image"
                 sampler2D _AlphaTex;
                 #endif
 
+                // SRP Batcher 兼容：所有材质属性必须在 CBUFFER 中
                 CBUFFER_START(UnityPerMaterial)
-                #ifdef CLIPPED
-                float4 _ClipBox = float4(-2, -2, 0, 0);
-                #endif
-
-                #ifdef SOFT_CLIPPED
-                float4 _ClipBox = float4(-2, -2, 0, 0);
-                float4 _ClipSoftness = float4(0, 0, 0, 0);
-                #endif
-                CBUFFER_END
-
-                #ifdef COLOR_FILTER
+                float4 _ClipBox;
+                float4 _ClipSoftness;
                 float4x4 _ColorMatrix;
                 float4 _ColorOffset;
-                float _ColorOption = 0;
-                #endif
+                float _ColorOption;
+                CBUFFER_END
 
                 v2f vert (appdata_t v)
                 {
