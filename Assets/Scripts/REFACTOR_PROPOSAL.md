@@ -879,5 +879,372 @@ P2（谨慎评估）:
 | Flutter | Skia/Impeller | Widget 树 |
 | React Native | Native View | JS 组件 |
 | Qt Quick | Scene Graph | QML + C++ |
+| GPUI Component | GPU 加速 | RenderOnce 组件 |
 
 **共同点：渲染层优化，逻辑层保持组件化**
+
+---
+
+## 九、gpui-component 对比分析
+
+> 参考：[longbridge/gpui-component](https://github.com/longbridge/gpui-component) - 基于 Zed GPUI 框架的 Rust UI 组件库
+
+### 9.1 gpui-component 核心设计
+
+#### 技术栈
+- **语言**: Rust（内存安全、零成本抽象）
+- **渲染引擎**: GPUI（Zed 编辑器的 GPU 加速 UI 框架）
+- **规模**: 60+ 跨平台桌面 UI 组件
+
+#### 架构特点
+
+```
+gpui-component 架构
+├── RenderOnce 组件模型     ← 无状态，每次渲染重建
+├── Entity<State> 状态外置  ← 数据与 UI 分离
+├── 委托模式数据源          ← ListDelegate trait
+├── 变体驱动样式            ← ButtonVariant 枚举
+└── 虚拟化列表              ← 仅渲染可见项
+```
+
+#### 状态管理：Entity<State> 模式
+
+```rust
+// gpui-component 的状态外置模式
+pub struct Input {
+    state: Entity<InputState>,  // 状态外置，可多组件共享
+    // ...配置字段
+}
+
+// 多个 UI 组件可共享同一状态实例
+let shared_state: Entity<InputState> = cx.new_entity(...);
+let input1 = Input::new(shared_state.clone());
+let input2 = InputPreview::new(shared_state.clone());  // 共享状态
+```
+
+**优势**：
+- 数据与 UI 完全分离
+- 多组件可共享同一状态
+- 便于跨组件通信
+- 状态可独立测试
+
+#### 组件模型：RenderOnce + 方法链
+
+```rust
+// gpui-component 的声明式构建
+Button::new("submit")
+    .label("Submit")
+    .variant(ButtonVariant::Primary)
+    .size(ButtonSize::Medium)
+    .disabled(is_loading)
+    .on_click(|_, _, _| { ... })
+    .when(show_icon, |btn| btn.icon(Icon::Check))  // 条件构建
+    .when_some(tooltip, |btn, tip| btn.tooltip(tip))
+```
+
+**核心 API**：
+- `when(condition, builder)` - 条件应用
+- `when_some(option, builder)` - Option 条件应用
+- 链式调用，类型安全
+
+#### 虚拟列表实现
+
+```rust
+// 委托模式数据源
+pub trait ListDelegate {
+    fn sections_count(&self) -> usize;
+    fn items_count(&self, section_ix: usize) -> usize;
+    fn render_item(&self, ix: usize) -> impl IntoElement;
+}
+
+// 虚拟化渲染
+pub struct List {
+    delegate: Arc<dyn ListDelegate>,
+    visible_range: Range<usize>,     // 仅渲染可见范围
+    rows_cache: RowsCache,           // 行缓存复用
+    deferred_scroll_to_index: Option<usize>,  // 延迟滚动
+}
+```
+
+**性能优化**：
+- 按需加载：`load_more_if_need()`
+- 搜索防抖：100ms 延迟避免闪烁
+- 缓存复用：避免重复计算
+
+#### 变体驱动样式系统
+
+```rust
+// 预设样式变体
+enum ButtonVariant {
+    Primary, Secondary, Danger, Info, Success,
+    Warning, Ghost, Link, Text, Custom(...)
+}
+
+// 四态样式计算
+impl ButtonVariant {
+    fn normal(&self) -> Style { ... }
+    fn hovered(&self) -> Style { ... }
+    fn active(&self) -> Style { ... }
+    fn disabled(&self) -> Style { ... }
+}
+```
+
+### 9.2 对比分析
+
+| 方面 | REFACTOR_PROPOSAL | gpui-component | 分析 |
+|------|-------------------|----------------|------|
+| **语言/平台** | C# / Unity | Rust / 原生 | Unity 有 GC，Rust 零成本 |
+| **渲染策略** | 增量渲染 + Dirty Region | GPU 每帧重建 | 各有优势，需按场景选择 |
+| **状态管理** | Signal 响应式 | Entity<State> 外置 | 可融合：Signal + 外置 |
+| **组件模型** | 声明式 DSL | RenderOnce | 相似，都是声明式 |
+| **虚拟化** | 未详细定义 | 完整实现 | **需补充** |
+| **样式系统** | 未详细定义 | 变体驱动 | **需补充** |
+| **事件处理** | 零 GC 事件 | 闭包回调 | 各有侧重 |
+| **性能度量** | DevTools | 可选追踪 | 可融合 |
+
+### 9.3 值得借鉴的设计
+
+#### ✅ 1. Entity<State> 状态外置模式
+
+**当前方案**：Signal 内嵌于组件
+```csharp
+public class PlayerHUD : UIComponent
+{
+    private readonly Signal<int> _hp = new(100);  // 状态内嵌
+}
+```
+
+**借鉴改进**：支持状态外置 + 共享
+```csharp
+// 状态可独立定义
+public class PlayerState : UIState
+{
+    public Signal<int> HP { get; } = new(100);
+    public Signal<int> MP { get; } = new(50);
+}
+
+// 多组件共享同一状态
+var state = new PlayerState();
+var hud = new PlayerHUD(state);
+var miniMap = new MiniMapPlayer(state);  // 共享状态
+```
+
+#### ✅ 2. 完整的虚拟列表实现
+
+**需补充的功能**：
+```csharp
+// 委托模式数据源
+public interface IListDelegate<T>
+{
+    int SectionCount { get; }
+    int GetItemCount(int section);
+    UINode RenderItem(int index, T data);
+}
+
+// 虚拟列表组件
+public class VirtualList<T> : UIComponent
+{
+    private readonly IListDelegate<T> _delegate;
+    private readonly Range _visibleRange;
+    private readonly Dictionary<int, UINode> _nodeCache;
+
+    // 延迟滚动（避免频繁更新）
+    private int? _deferredScrollIndex;
+
+    // 按需加载
+    public Action<int> OnLoadMore { get; set; }
+}
+```
+
+#### ✅ 3. 变体驱动样式系统
+
+**需补充的功能**：
+```csharp
+// 预设样式变体
+public enum ButtonVariant
+{
+    Primary, Secondary, Danger, Success,
+    Warning, Ghost, Link, Text
+}
+
+// 尺寸变体
+public enum UISize { XS, SM, MD, LG }
+
+// 四态样式
+public interface IVariantStyle
+{
+    Style Normal { get; }
+    Style Hovered { get; }
+    Style Active { get; }
+    Style Disabled { get; }
+}
+
+// 使用示例
+Button("Submit")
+    .Variant(ButtonVariant.Primary)
+    .Size(UISize.MD)
+```
+
+#### ✅ 4. 条件构建 API（when/when_some）
+
+**需补充的功能**：
+```csharp
+// 条件构建扩展
+public static class UIBuilderExtensions
+{
+    public static T When<T>(this T node, bool condition, Func<T, T> builder)
+        where T : UINode
+        => condition ? builder(node) : node;
+
+    public static T WhenSome<T, V>(this T node, V? value, Func<T, V, T> builder)
+        where T : UINode where V : class
+        => value != null ? builder(node, value) : node;
+}
+
+// 使用示例
+Button("Submit")
+    .When(isLoading, btn => btn.Loading(true))
+    .WhenSome(tooltip, (btn, tip) => btn.Tooltip(tip))
+    .When(showIcon, btn => btn.Icon(Icons.Check))
+```
+
+#### ✅ 5. 两层事件防护机制
+
+**需补充的功能**：
+```csharp
+public class InteractiveComponent : UIComponent
+{
+    private bool _isDisabled;
+    private bool _isLoading;
+
+    // 第一层：鼠标按下时检查
+    protected override void OnMouseDown(MouseEvent evt)
+    {
+        if (_isDisabled || _isLoading)
+        {
+            evt.StopPropagation();  // 阻止事件继续
+            return;
+        }
+        base.OnMouseDown(evt);
+    }
+
+    // 第二层：点击时再次验证
+    protected override void OnClick(ClickEvent evt)
+    {
+        if (!IsClickable()) return;
+        _onClick?.Invoke(evt);
+    }
+
+    private bool IsClickable() => !_isDisabled && !_isLoading;
+}
+```
+
+#### ✅ 6. 性能度量系统增强
+
+**需补充的功能**：
+```csharp
+// 可选的性能追踪
+public static class UIMetrics
+{
+    private static bool _enabled = Environment.GetEnvironmentVariable("UI_METRICS") != null;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static IDisposable Measure([CallerMemberName] string name = "")
+    {
+        if (!_enabled) return NullDisposable.Instance;
+        return new MetricScope(name);
+    }
+}
+
+// 使用示例
+public void UpdateLayout()
+{
+    using (UIMetrics.Measure())  // 自动记录耗时
+    {
+        // 布局计算...
+    }
+}
+```
+
+#### ✅ 7. 搜索防抖机制
+
+**需补充的功能**：
+```csharp
+public class SearchInput : UIComponent
+{
+    private readonly Signal<string> _searchText = new("");
+    private CancellationTokenSource _debounceToken;
+    private const int DebounceMs = 100;
+
+    private async void OnTextChanged(string text)
+    {
+        _debounceToken?.Cancel();
+        _debounceToken = new CancellationTokenSource();
+
+        try
+        {
+            await Task.Delay(DebounceMs, _debounceToken.Token);
+            _searchText.Value = text;  // 防抖后更新
+        }
+        catch (TaskCanceledException) { }
+    }
+}
+```
+
+### 9.4 不适用于本方案的设计
+
+| 设计 | 原因 |
+|------|------|
+| **Rust 所有权** | C# 有 GC，无需手动管理 |
+| **每帧重建** | Unity 场景下增量更新更高效 |
+| **GPUI 渲染** | 使用 Unity 渲染管线 |
+| **Rope 文本结构** | 游戏 UI 文本场景较简单 |
+
+### 9.5 融合方案
+
+```
+融合后的架构
+├── 状态层
+│   ├── Signal 响应式（细粒度更新）
+│   ├── Entity<State> 外置（跨组件共享）  ← 新增
+│   └── Computed 派生状态
+├── 组件层
+│   ├── 声明式 DSL Builder
+│   ├── When/WhenSome 条件构建  ← 新增
+│   └── 变体驱动样式系统  ← 新增
+├── 渲染层
+│   ├── 增量渲染 + Dirty Region
+│   ├── 虚拟列表（委托模式）  ← 新增
+│   └── GPU Instancing
+└── 工具层
+    ├── DevTools 检查器
+    ├── 性能度量系统  ← 增强
+    └── 热重载
+```
+
+---
+
+## 十、更新后的重构优先级
+
+```
+P0（高收益低风险）:
+├── 响应式状态（Signal + Entity 外置） ← 融合
+├── 增量渲染（Dirty Region）
+├── 对象池化
+└── 虚拟列表（委托模式）  ← 新增
+
+P1（中等收益）:
+├── 声明式 API + When 条件构建  ← 增强
+├── 变体驱动样式系统  ← 新增
+├── 强类型绑定
+└── 渲染层 DoD
+
+P2（工具支持）:
+├── 性能度量系统  ← 增强
+├── DevTools
+└── 热重载
+
+P3（谨慎评估）:
+├── 多线程布局
+└── 完整 ECS（不推荐）
+```
