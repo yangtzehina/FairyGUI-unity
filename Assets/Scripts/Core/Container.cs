@@ -935,6 +935,34 @@ namespace FairyGUI
             if ((_flags & Flags.BatchingRequested) != 0)
                 DoFairyBatching();
 
+            // Mesh 合并批处理
+            if (meshBatching && _meshBatcher != null && _batchElements != null && _batchElements.Count > 0)
+            {
+                // 收集可批处理的 NGraphics
+                var graphicsList = new List<NGraphics>();
+                foreach (var elem in _batchElements)
+                {
+                    if (elem.owner is DisplayObject dobj && dobj.graphics != null)
+                        graphicsList.Add(dobj.graphics);
+                }
+
+                if (graphicsList.Count > 0)
+                {
+                    _meshBatcher.RebuildBatch(graphicsList);
+
+                    if (_mask != null)
+                        _mask.SetRenderingOrder(context, false);
+
+                    _meshBatcher.SetRenderingOrder(context);
+
+                    if (_mask != null && _mask.graphics != null)
+                        _mask.graphics._SetStencilEraserOrder(context.renderingOrder++);
+
+                    return; // 跳过原有逐元素设置
+                }
+            }
+
+            // 原有逻辑
             if (_mask != null)
                 _mask.SetRenderingOrder(context, false);
 

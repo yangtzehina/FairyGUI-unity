@@ -24,12 +24,16 @@ namespace FairyGUI
         private List<Vector2> _uvs = new List<Vector2>(256);
         private List<int> _triangles = new List<int>(384);
 
+        private static int _batchIndex = 0;
+
         public BatchGroup(Material mat, Transform parent)
         {
             material = mat;
+            _batchIndex++;
 
-            // 创建渲染 GameObject
-            gameObject = new GameObject("BatchGroup_" + (mat != null ? mat.name : "null"));
+            // 创建渲染 GameObject，使用明显的命名便于在 Frame Debugger 中识别
+            string matName = mat != null ? mat.name : "null";
+            gameObject = new GameObject($"[FairyGUI MeshBatch #{_batchIndex}] {matName}");
             gameObject.transform.SetParent(parent, false);
             gameObject.layer = parent.gameObject.layer;
 
@@ -41,7 +45,7 @@ namespace FairyGUI
             meshRenderer.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.Off;
 
             combinedMesh = new Mesh();
-            combinedMesh.name = "CombinedMesh_" + (mat != null ? mat.name : "null");
+            combinedMesh.name = $"[MeshBatch #{_batchIndex}] Combined ({matName})";
             combinedMesh.MarkDynamic();
             meshFilter.sharedMesh = combinedMesh;
 

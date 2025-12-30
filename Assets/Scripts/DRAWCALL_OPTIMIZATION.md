@@ -828,6 +828,54 @@ uiPanel.container.meshBatching = true;
 
 ---
 
+## 编辑器调试工具
+
+### Mesh Batching Control Panel
+
+提供运行时控制面板，方便对比不同批处理模式的 DrawCall 效果。
+
+#### 打开方式
+菜单：`Tools > FairyGUI > Mesh Batching Control Panel`
+
+#### 功能说明
+
+| 功能 | 说明 |
+|------|------|
+| FairyBatching Toggle | 开关基础批处理，关闭后可获取无任何批处理的基准 DrawCall |
+| Off 按钮 | 关闭 Mesh 合并，仅使用 FairyBatching |
+| Mesh Batching 按钮 | 启用 Mesh 合并批处理 |
+| Generational 按钮 | 启用分代批处理 |
+| Refresh Stats | 刷新统计信息 |
+| Reset | 重置分代状态 |
+
+#### 统计信息
+
+- Graphics Count: UI 图形元素数量
+- Object Count: 对象数量
+- FairyBatching/MeshBatching/GenerationalBatching: 当前开关状态
+- Batch Groups: 批处理组数量
+- Total Vertices: 总顶点数
+- Gen0/Gen1/Gen2 Count: 分代元素数量（分代模式）
+
+#### 使用流程
+
+1. 运行游戏
+2. 打开控制面板
+3. 打开 `Window > Analysis > Frame Debugger`
+4. 切换不同模式，观察 DrawCall 变化
+5. 对比优化效果
+
+#### 对比测试建议
+
+| 测试场景 | 操作 | 观察点 |
+|---------|------|-------|
+| 基准值 | 关闭 FairyBatching | 原始 DrawCall 数量 |
+| FairyBatching | 开启 FairyBatching，Off 模式 | Unity 动态合批效果 |
+| Mesh 合并 | Mesh Batching 模式 | Mesh 合并后 DrawCall |
+| 分代批处理 | Generational 模式，等待 2 秒 | Gen2 合批效果 |
+
+---
+
 # 分代批处理设计 (Generational Batching)
 
 ## 设计思想
