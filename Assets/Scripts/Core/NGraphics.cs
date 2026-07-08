@@ -70,6 +70,11 @@ namespace FairyGUI
         bool _meshDirty;
         Rect _contentRect;
         FlipType _flip;
+        int _renderingOrder;
+
+        MaterialManager.MaterialRef _matRef;
+        MaterialManager _matRefOwner;
+        int _matRefFlags;
 
         public class VertexMatrix
         {
@@ -368,28 +373,36 @@ namespace FairyGUI
         [Obsolete("Use renderingOrder")]
         public int sortingOrder
         {
-            get { return meshRenderer.sortingOrder; }
-            set { meshRenderer.sortingOrder = value; }
+            get { return _renderingOrder; }
+            set { renderingOrder = value; }
         }
 
         /// <summary>
-        /// 
+        ///
         /// </summary>
         public int renderingOrder
         {
-            get { return meshRenderer.sortingOrder; }
-            set { meshRenderer.sortingOrder = value; }
+            get { return _renderingOrder; }
+            set
+            {
+                //writing to meshRenderer.sortingOrder is a native call, skip it when unchanged
+                if (_renderingOrder != value)
+                {
+                    _renderingOrder = value;
+                    meshRenderer.sortingOrder = value;
+                }
+            }
         }
 
         public void SetRenderingOrder(UpdateContext context, bool inBatch)
         {
-            meshRenderer.sortingOrder = context.renderingOrder++;
+            this.renderingOrder = context.renderingOrder++;
 
             if (subInstances != null && !inBatch)
             {
                 foreach (var sub in subInstances)
                 {
-                    sub.meshRenderer.sortingOrder = context.renderingOrder++;
+                    sub.renderingOrder = context.renderingOrder++;
                 }
             }
         }
@@ -400,7 +413,7 @@ namespace FairyGUI
         /// <param name="value"></param>
         internal void _SetStencilEraserOrder(int value)
         {
-            _stencilEraser.meshRenderer.sortingOrder = value;
+            _stencilEraser.sortingOrder = value;
         }
 
         /// <summary>
@@ -559,6 +572,8 @@ namespace FairyGUI
 
             _manager = null;
             _material = null;
+            _matRef = null;
+            _matRefOwner = null;
             meshRenderer = null;
             meshFilter = null;
             _stencilEraser = null;
@@ -628,12 +643,12 @@ namespace FairyGUI
                                     matFlags |= (int)MaterialFlags.Clipped;
                             }
 
-                            _material = _manager.GetMaterial(matFlags, blendMode, context.clipInfo.clipId);
+                            _material = GetPooledMaterial(matFlags, blendMode, context.clipInfo.clipId);
                             if (_manager.firstMaterialInFrame)
                                 context.ApplyClippingProperties(_material, true);
                         }
                         else
-                            _material = _manager.GetMaterial(matFlags, blendMode, 0);
+                            _material = GetPooledMaterial(matFlags, blendMode, 0);
                     }
                 }
                 else
@@ -661,6 +676,28 @@ namespace FairyGUI
                 foreach (var sub in subInstances)
                     sub.Update(context, alpha, grayed);
             }
+        }
+
+        //Per-frame fast path: when this graphics requests the same material as last frame,
+        //skip MaterialManager's dictionary lookup + list scan and only refresh the frame stamp.
+        //A cached ref can be re-purposed by MaterialManager once unused for a frame, or its
+        //material destroyed, so group/blendMode/material are re-validated before reuse.
+        Material GetPooledMaterial(int flags, BlendMode blendMode, uint group)
+        {
+            MaterialManager.MaterialRef mref = _matRef;
+            if (mref != null && _matRefOwner == _manager && _matRefFlags == flags
+                && mref.group == group && mref.blendMode == blendMode
+                && !_manager.combineTexture && mref.material != null)
+            {
+                _manager.StampMaterialRef(mref);
+                return mref.material;
+            }
+
+            mref = _manager.GetMaterialRef(flags, blendMode, group);
+            _matRef = mref;
+            _matRefOwner = _manager;
+            _matRefFlags = flags;
+            return mref.material;
         }
 
         internal void _PreUpdateMask(UpdateContext context, uint maskId)
@@ -874,6 +911,20 @@ namespace FairyGUI
             {
                 get { return meshRenderer.enabled; }
                 set { meshRenderer.enabled = value; }
+            }
+
+            int _sortingOrder;
+            public int sortingOrder
+            {
+                get { return _sortingOrder; }
+                set
+                {
+                    if (_sortingOrder != value)
+                    {
+                        _sortingOrder = value;
+                        meshRenderer.sortingOrder = value;
+                    }
+                }
             }
         }
     }

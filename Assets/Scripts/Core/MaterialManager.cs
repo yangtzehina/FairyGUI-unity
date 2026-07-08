@@ -31,12 +31,17 @@ namespace FairyGUI
         Dictionary<int, List<MaterialRef>> _materials;
         bool _combineTexture;
 
-        class MaterialRef
+        internal class MaterialRef
         {
             public Material material;
             public int frame;
             public BlendMode blendMode;
             public uint group;
+        }
+
+        internal bool combineTexture
+        {
+            get { return _combineTexture; }
         }
 
         const int internalKeywordsCount = 6;
@@ -92,6 +97,11 @@ namespace FairyGUI
         /// <returns></returns>
         public Material GetMaterial(int flags, BlendMode blendMode, uint group)
         {
+            return GetMaterialRef(flags, blendMode, group).material;
+        }
+
+        internal MaterialRef GetMaterialRef(int flags, BlendMode blendMode, uint group)
+        {
             if (blendMode != BlendMode.Normal && BlendModeUtils.Factors[(int)blendMode].pma)
                 flags |= (int)MaterialFlags.ColorFilter;
 
@@ -122,7 +132,7 @@ namespace FairyGUI
                     if (_combineTexture)
                         item.material.SetTexture(ShaderConfig.ID_AlphaTex, _texture.alphaTexture);
 
-                    return item.material;
+                    return item;
                 }
                 else if (result == null && (item.frame > frameId || item.frame < frameId - 1)) //collect materials if it is unused in last frame
                     result = item;
@@ -145,7 +155,22 @@ namespace FairyGUI
             result.group = group;
             result.frame = frameId;
             firstMaterialInFrame = true;
-            return result.material;
+            return result;
+        }
+
+        //A MaterialRef may be reassigned to another group/blendMode once it goes unused
+        //for a frame (see the collect logic above), so callers holding a cached ref must
+        //re-check group/blendMode before taking this fast path.
+        internal void StampMaterialRef(MaterialRef mref)
+        {
+            int frameId = Time.frameCount;
+            if (mref.frame != frameId)
+            {
+                firstMaterialInFrame = true;
+                mref.frame = frameId;
+            }
+            else
+                firstMaterialInFrame = false;
         }
 
         /// <summary>
