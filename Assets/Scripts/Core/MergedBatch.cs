@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+#if UNITY_2020_1_OR_NEWER
+using Unity.Profiling;
+#endif
 
 namespace FairyGUI
 {
@@ -64,6 +67,11 @@ namespace FairyGUI
         static readonly List<int> cTriangles = new List<int>();
         static bool cHasUV1;
 
+#if UNITY_2020_1_OR_NEWER
+        static readonly ProfilerMarker sSyncMarker = new ProfilerMarker("MergedBatch.Sync");
+        static readonly ProfilerMarker sBuildMarker = new ProfilerMarker("MergedBatch.Build");
+#endif
+
         public MergedBatch(Container owner)
         {
             _owner = owner;
@@ -80,8 +88,16 @@ namespace FairyGUI
             if (elements == null)
                 return;
 
-            if (_structureDirty || IsContentDirty())
-                Build(elements);
+#if UNITY_2020_1_OR_NEWER
+            using (sSyncMarker.Auto())
+#endif
+            {
+                if (_structureDirty || IsContentDirty())
+                    Build(elements);
+
+                Stats.MergedRuns += _runs.Count;
+                Stats.MergedElements += _sources.Count;
+            }
 
             //the owner may switch layers (e.g. painting mode captures the subtree on a
             //hidden layer); run GameObjects are not display children, so follow explicitly
@@ -126,6 +142,17 @@ namespace FairyGUI
         }
 
         void Build(List<BatchElement> elements)
+        {
+#if UNITY_2020_1_OR_NEWER
+            using (sBuildMarker.Auto())
+#endif
+            {
+                BuildInternal(elements);
+            }
+            Stats.MergedRebuilds++;
+        }
+
+        void BuildInternal(List<BatchElement> elements)
         {
             _structureDirty = false;
 
