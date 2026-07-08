@@ -127,6 +127,16 @@ namespace FairyGUI
         }
 
         /// <summary>
+        /// Experimental. Bake children sharing a material into combined meshes
+        /// (one draw call per material run). Implies fairyBatching.
+        /// </summary>
+        public bool mergedBatching
+        {
+            get { return rootContainer.mergedBatching; }
+            set { rootContainer.mergedBatching = value; }
+        }
+
+        /// <summary>
         /// 
         /// </summary>
         /// <param name="childChanged"></param>

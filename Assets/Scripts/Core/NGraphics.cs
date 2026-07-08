@@ -76,6 +76,15 @@ namespace FairyGUI
         MaterialManager _matRefOwner;
         int _matRefFlags;
 
+        //incremented whenever the mesh content is mutated (rebuild/alpha/tint),
+        //so a MergedBatch can detect changes with a managed int compare
+        internal int _contentVersion;
+
+        internal bool hasPropertyBlock
+        {
+            get { return _propertyBlock != null; }
+        }
+
         public class VertexMatrix
         {
             public Vector3 cameraPos;
@@ -450,6 +459,7 @@ namespace FairyGUI
 
             mesh.SetColors(vb.colors);
             vb.End();
+            _contentVersion++;
         }
 
         void ChangeAlpha(float value)
@@ -472,6 +482,7 @@ namespace FairyGUI
 
             mesh.SetColors(vb.colors);
             vb.End();
+            _contentVersion++;
         }
 
         /// <summary>
@@ -730,6 +741,7 @@ namespace FairyGUI
         void UpdateMeshNow()
         {
             _meshDirty = false;
+            _contentVersion++;
 
             if (_texture == null || _meshFactory == null)
             {

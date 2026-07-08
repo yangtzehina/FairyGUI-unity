@@ -54,6 +54,7 @@ namespace FairyGUI
         DisplayObject _mask;
         Rect? _clipRect;
         List<BatchElement> _batchElements;
+        MergedBatch _mergedBatch;
 
         internal int _panelOrder;
         internal DisplayObject _lastFocus;
@@ -681,6 +682,34 @@ namespace FairyGUI
             }
         }
 
+        /// <summary>
+        /// Experimental. In addition to fairyBatching's sortingOrder arrangement, bake the
+        /// meshes of children sharing a material into combined meshes, so this container
+        /// costs one draw call per material run instead of one per element. See MergedBatch
+        /// for the rebuild triggers and the elements that keep their own renderer.
+        /// </summary>
+        public bool mergedBatching
+        {
+            get { return _mergedBatch != null; }
+            set
+            {
+                if (value != (_mergedBatch != null))
+                {
+                    if (value)
+                    {
+                        _mergedBatch = new MergedBatch(this);
+                        fairyBatching = true;
+                    }
+                    else
+                    {
+                        _mergedBatch.Dispose();
+                        _mergedBatch = null;
+                    }
+                    InvalidateBatchingState(true);
+                }
+            }
+        }
+
         internal void UpdateBatchingFlags()
         {
             bool oldValue = (_flags & Flags.BatchingRoot) != 0;
@@ -872,11 +901,17 @@ namespace FairyGUI
                 if (_mask.graphics != null)
                     _mask.graphics._SetStencilEraserOrder(context.renderingOrder++);
             }
+
+            if (_mergedBatch != null)
+                _mergedBatch.Sync(context, _batchElements);
         }
 
         private void DoFairyBatching()
         {
             _flags &= ~Flags.BatchingRequested;
+
+            if (_mergedBatch != null)
+                _mergedBatch.SetStructureDirty();
 
             if (_batchElements == null)
                 _batchElements = new List<BatchElement>();
@@ -981,6 +1016,12 @@ namespace FairyGUI
         {
             if ((_flags & Flags.Disposed) != 0)
                 return;
+
+            if (_mergedBatch != null)
+            {
+                _mergedBatch.Dispose();
+                _mergedBatch = null;
+            }
 
             base.Dispose(); //Destroy GameObject tree first, avoid destroying each seperately;
 
