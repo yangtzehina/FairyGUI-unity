@@ -842,7 +842,7 @@ namespace FairyGUI
             if (_paintingMode != 0)
             {
                 context.LeavePaintingMode();
-                UpdateContext.OnEnd += _paintingInfo.captureDelegate;
+                UpdateContext.RegisterEndCallback(_paintingInfo.captureDelegate);
             }
 
             if (onUpdate != null)

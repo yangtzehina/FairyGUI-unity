@@ -185,7 +185,7 @@ namespace FairyGUI
                     {
                         this.container.onUpdate += () =>
                         {
-                            UpdateContext.OnEnd += _captureDelegate;
+                            UpdateContext.RegisterEndCallback(_captureDelegate);
                         };
                     }
                 }

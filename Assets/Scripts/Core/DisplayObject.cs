@@ -1609,7 +1609,7 @@ namespace FairyGUI
                 if (!(this is Container))
                 {
                     if ((_flags & Flags.CacheAsBitmap) == 0 || _paintingInfo.flag != 2)
-                        UpdateContext.OnEnd += _paintingInfo.captureDelegate;
+                        UpdateContext.RegisterEndCallback(_paintingInfo.captureDelegate);
                 }
 
                 paintingGraphics.Update(context, 1, false);

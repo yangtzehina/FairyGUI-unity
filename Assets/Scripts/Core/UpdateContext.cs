@@ -43,6 +43,17 @@ namespace FairyGUI
         public static event Action OnEnd;
 
         static Action _tmpBegin;
+        static readonly List<Action> _endCallbacks = new List<Action>();
+
+        /// <summary>
+        /// Register a one-shot callback invoked after the current update pass ends.
+        /// Unlike the OnEnd event, registering every frame does not allocate.
+        /// </summary>
+        /// <param name="callback"></param>
+        public static void RegisterEndCallback(Action callback)
+        {
+            _endCallbacks.Add(callback);
+        }
 
         public UpdateContext()
         {
@@ -94,6 +105,16 @@ namespace FairyGUI
                 OnEnd.Invoke();
 
             OnEnd = null;
+
+            //same semantics as the OnEnd event: callbacks registered during invocation
+            //are discarded, matching the old 'OnEnd = null' behavior
+            int cnt = _endCallbacks.Count;
+            if (cnt > 0)
+            {
+                for (int i = 0; i < cnt; i++)
+                    _endCallbacks[i]();
+                _endCallbacks.Clear();
+            }
         }
 
         /// <summary>
@@ -313,6 +334,7 @@ namespace FairyGUI
         {
             OnBegin = null;
             OnEnd = null;
+            _endCallbacks.Clear();
         }
 #endif
     }
