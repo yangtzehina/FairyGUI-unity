@@ -37,8 +37,13 @@ namespace FairyGUI
         public static int MergedElements;
 
         /// <summary>
-        /// MergedBatch rebuilds (re-slice + re-bake) performed this frame.
+        /// MergedBatch full rebuilds (re-slice + re-bake everything) performed this frame.
         /// </summary>
         public static int MergedRebuilds;
+
+        /// <summary>
+        /// Individual runs re-baked in place (source-level dirt) this frame.
+        /// </summary>
+        public static int MergedRebakes;
     }
 }

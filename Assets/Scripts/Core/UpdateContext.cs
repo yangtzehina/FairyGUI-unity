@@ -82,6 +82,7 @@ namespace FairyGUI
             Stats.MergedRuns = 0;
             Stats.MergedElements = 0;
             Stats.MergedRebuilds = 0;
+            Stats.MergedRebakes = 0;
 
             _tmpBegin = OnBegin;
             OnBegin = null;

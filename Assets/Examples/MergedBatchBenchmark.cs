@@ -39,7 +39,8 @@ public class MergedBatchBenchmark : MonoBehaviour
     static readonly string[] CounterNames =
     {
         "Draw Calls Count", "Batches Count", "SetPass Calls Count", "Vertices Count",
-        "GC Allocated In Frame", "Main Thread", "MergedBatch.Sync", "MergedBatch.Build"
+        "GC Allocated In Frame", "Main Thread", "MergedBatch.Sync", "MergedBatch.Build",
+        "MergedBatch.Rebake"
     };
 
     ProfilerRecorder[] _recorders;
@@ -52,8 +53,11 @@ public class MergedBatchBenchmark : MonoBehaviour
     RenderTexture _rt;
     Camera _cam;
     StringBuilder _json;
-    long _statRuns, _statElements, _statRebuilds;
+    long _statRuns, _statElements, _statRebuilds, _statRebakes;
+    TextField _churnText;
+    string _churnOriginal;
 
+    const int PhaseCount = 5;
     const int Warmup = 5;
 
     void Start()
@@ -62,18 +66,40 @@ public class MergedBatchBenchmark : MonoBehaviour
         _rt = new RenderTexture(1136, 640, 24);
         _originalMerged = _target.mergedBatching;
         _originalPosY = _scrollPane != null ? _scrollPane.posY : 0;
+        _churnText = FindTextField(_target);
+        _churnOriginal = _churnText != null ? _churnText.text : null;
         _json = new StringBuilder();
         _json.Append("{\n");
         NextPhase();
     }
 
+    static TextField FindTextField(Container root)
+    {
+        int cnt = root.numChildren;
+        for (int i = 0; i < cnt; i++)
+        {
+            DisplayObject child = root.GetChildAt(i);
+            if (child is TextField tf)
+                return tf;
+            if (child is Container c)
+            {
+                TextField found = FindTextField(c);
+                if (found != null)
+                    return found;
+            }
+        }
+        return null;
+    }
+
     void NextPhase()
     {
         _phase++;
-        while (_phase < 4 && (_phase & 1) == 1 && _scrollPane == null)
+        while (_phase < PhaseCount
+               && (((_phase == 1 || _phase == 3) && _scrollPane == null)
+                   || (_phase == 4 && _churnText == null)))
             _phase++;
 
-        if (_phase >= 4)
+        if (_phase >= PhaseCount)
         {
             Finish();
             return;
@@ -83,22 +109,24 @@ public class MergedBatchBenchmark : MonoBehaviour
         if (_scrollPane != null)
             _scrollPane.SetPosY(_originalPosY, false);
         _frame = -Warmup;
-        _statRuns = _statElements = _statRebuilds = 0;
+        _statRuns = _statElements = _statRebuilds = _statRebakes = 0;
         StartRecorders();
     }
 
     void LateUpdate()
     {
-        if (_phase >= 4)
+        if (_phase >= PhaseCount)
             return;
 
-        bool scroll = (_phase & 1) == 1;
+        bool scroll = _phase == 1 || _phase == 3;
         if (scroll && _frame >= -1)
         {
             //large enough step to survive snapToItem lists
             float step = 130;
             _scrollPane.SetPosY(_scrollPane.posY >= _scrollPane.contentHeight * 0.5f ? 0 : _scrollPane.posY + step, false);
         }
+        if (_phase == 4 && _frame >= -1)
+            _churnText.text = (_frame & 1) == 0 ? "888" : "999";
 
         RenderOnce();
 
@@ -109,6 +137,7 @@ public class MergedBatchBenchmark : MonoBehaviour
             _statRuns += Stats.MergedRuns;
             _statElements += Stats.MergedElements;
             _statRebuilds += Stats.MergedRebuilds;
+            _statRebakes += Stats.MergedRebakes;
         }
 
         _frame++;
@@ -122,14 +151,22 @@ public class MergedBatchBenchmark : MonoBehaviour
 
     void EmitPhase()
     {
-        bool merged = _phase >= 2;
-        bool scroll = (_phase & 1) == 1;
-        _json.Append("  \"").Append(merged ? "merged" : "baseline").Append(scroll ? "_scroll" : "_idle").Append("\": {\n");
+        string name;
+        switch (_phase)
+        {
+            case 0: name = "baseline_idle"; break;
+            case 1: name = "baseline_scroll"; break;
+            case 2: name = "merged_idle"; break;
+            case 3: name = "merged_scroll"; break;
+            default: name = "merged_textchurn"; break;
+        }
+        _json.Append("  \"").Append(name).Append("\": {\n");
         for (int r = 0; r < CounterNames.Length; r++)
             _json.Append("    \"").Append(CounterNames[r]).Append("\": ").Append(Median(_values[r])).Append(",\n");
         _json.Append("    \"Stats.MergedRuns(avg)\": ").Append(_statRuns / _samples).Append(",\n");
         _json.Append("    \"Stats.MergedElements(avg)\": ").Append(_statElements / _samples).Append(",\n");
-        _json.Append("    \"Stats.MergedRebuilds(total)\": ").Append(_statRebuilds).Append("\n");
+        _json.Append("    \"Stats.MergedRebuilds(total)\": ").Append(_statRebuilds).Append(",\n");
+        _json.Append("    \"Stats.MergedRebakes(total)\": ").Append(_statRebakes).Append("\n");
         _json.Append("  },\n");
     }
 
@@ -166,6 +203,7 @@ public class MergedBatchBenchmark : MonoBehaviour
         _recorders[5] = ProfilerRecorder.StartNew(ProfilerCategory.Internal, "Main Thread");
         _recorders[6] = ProfilerRecorder.StartNew(ProfilerCategory.Scripts, "MergedBatch.Sync");
         _recorders[7] = ProfilerRecorder.StartNew(ProfilerCategory.Scripts, "MergedBatch.Build");
+        _recorders[8] = ProfilerRecorder.StartNew(ProfilerCategory.Scripts, "MergedBatch.Rebake");
 
         _values = new long[CounterNames.Length][];
         for (int i = 0; i < _values.Length; i++)

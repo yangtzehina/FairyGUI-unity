@@ -14,13 +14,15 @@ namespace FairyGUI
     /// by a single renderer, so the container costs one draw call per material run instead of
     /// one per element. Leaf display objects keep their full update pipeline (mesh generation,
     /// material selection, hit testing); only their renderers are switched off via
-    /// forceRenderingOff while their content is drawn by the merged mesh.
+    /// forceRenderingOff while their content is drawn by the merged mesh. Runs that would
+    /// contain a single element are not merged at all - the leaf keeps its own renderer,
+    /// which costs the same draw call without the copy.
     ///
-    /// Rebuild is dirty-driven:
-    /// - structure: DoFairyBatching re-sort marks the batch dirty
-    /// - content: NGraphics._contentVersion changes (mesh rebuild / alpha / tint)
-    /// - material: the material a leaf resolved this frame differs from the baked one
-    /// - transform: Transform.hasChanged on any watched leaf or intermediate container
+    /// Dirt is attributed at two levels:
+    /// - source-level (a merged element's mesh content changed, or its own transform moved):
+    ///   only the runs containing those sources are re-baked
+    /// - everything else (structure re-sort, any material change, an intermediate container
+    ///   transform change - e.g. scrolling, which moves all children rigidly): full rebuild
     ///
     /// Elements that cannot be merged (masks, painting mode, custom property blocks,
     /// vertex matrices, breakBatch) keep their own renderer; draw order is preserved because
@@ -37,6 +39,8 @@ namespace FairyGUI
             public Material material;
             public NGraphics firstSource; //sortingOrder is taken from this element each frame
             public int sortingOrder = -1;
+            public bool geometryDirty;
+            public readonly List<int> sourceIndices = new List<int>();
         }
 
         Container _owner;
@@ -49,9 +53,16 @@ namespace FairyGUI
         readonly List<NGraphics> _sources = new List<NGraphics>();
         readonly List<int> _sourceVersions = new List<int>();
         readonly List<Material> _sourceMaterials = new List<Material>();
+        readonly List<Transform> _sourceTransforms = new List<Transform>();
+        readonly List<Run> _sourceRuns = new List<Run>();
 
-        //transforms whose movement invalidates baked vertices (leaves + intermediate containers)
-        readonly List<Transform> _watched = new List<Transform>();
+        //unmerged single-element runs: they draw themselves, but a material change still
+        //requires a re-slice because they may become mergeable with a neighbour
+        readonly List<NGraphics> _singles = new List<NGraphics>();
+        readonly List<Material> _singleMaterials = new List<Material>();
+
+        //intermediate containers: their movement shifts whole subtrees, handled as full rebuild
+        readonly List<Transform> _watchedContainers = new List<Transform>();
 
         //scratch buffers shared by all MergedBatch instances (main thread only)
         static readonly List<Vector3> sVerts = new List<Vector3>();
@@ -59,6 +70,7 @@ namespace FairyGUI
         static readonly List<Vector2> sUV0 = new List<Vector2>();
         static readonly List<Vector2> sUV1 = new List<Vector2>();
         static readonly List<int> sTriangles = new List<int>();
+        static readonly List<NGraphics> sGroup = new List<NGraphics>();
 
         static readonly List<Vector3> cVerts = new List<Vector3>();
         static readonly List<Color32> cColors = new List<Color32>();
@@ -70,7 +82,15 @@ namespace FairyGUI
 #if UNITY_2020_1_OR_NEWER
         static readonly ProfilerMarker sSyncMarker = new ProfilerMarker("MergedBatch.Sync");
         static readonly ProfilerMarker sBuildMarker = new ProfilerMarker("MergedBatch.Build");
+        static readonly ProfilerMarker sRebakeMarker = new ProfilerMarker("MergedBatch.Rebake");
 #endif
+
+        enum Dirt
+        {
+            Clean,
+            Partial,
+            Full
+        }
 
         public MergedBatch(Container owner)
         {
@@ -92,8 +112,11 @@ namespace FairyGUI
             using (sSyncMarker.Auto())
 #endif
             {
-                if (_structureDirty || IsContentDirty())
+                Dirt dirt = _structureDirty ? Dirt.Full : CheckDirty();
+                if (dirt == Dirt.Full)
                     Build(elements);
+                else if (dirt == Dirt.Partial)
+                    RebakeDirtyRuns();
 
                 Stats.MergedRuns += _runs.Count;
                 Stats.MergedElements += _sources.Count;
@@ -118,27 +141,66 @@ namespace FairyGUI
             }
         }
 
-        bool IsContentDirty()
+        Dirt CheckDirty()
         {
-            int cnt = _sources.Count;
+            int cnt = _singles.Count;
+            for (int i = 0; i < cnt; i++)
+            {
+                if (!ReferenceEquals(_singles[i].material, _singleMaterials[i]))
+                    return Dirt.Full;
+            }
+
+            bool partial = false;
+            cnt = _sources.Count;
             for (int i = 0; i < cnt; i++)
             {
                 NGraphics g = _sources[i];
-                if (g._contentVersion != _sourceVersions[i])
-                    return true;
                 if (!ReferenceEquals(g.material, _sourceMaterials[i]))
-                    return true;
+                    return Dirt.Full;
+                if (g._contentVersion != _sourceVersions[i])
+                {
+                    _sourceRuns[i].geometryDirty = true;
+                    partial = true;
+                    continue;
+                }
+                Transform t = _sourceTransforms[i];
+                if (t == null)
+                    return Dirt.Full;
+                if (t.hasChanged)
+                {
+                    _sourceRuns[i].geometryDirty = true;
+                    partial = true;
+                }
             }
 
-            cnt = _watched.Count;
+            cnt = _watchedContainers.Count;
             for (int i = 0; i < cnt; i++)
             {
-                Transform t = _watched[i];
+                Transform t = _watchedContainers[i];
                 if (t == null || t.hasChanged)
-                    return true;
+                    return Dirt.Full;
             }
 
-            return false;
+            return partial ? Dirt.Partial : Dirt.Clean;
+        }
+
+        void RebakeDirtyRuns()
+        {
+#if UNITY_2020_1_OR_NEWER
+            using (sRebakeMarker.Auto())
+#endif
+            {
+                Matrix4x4 worldToLocal = _owner.cachedTransform.worldToLocalMatrix;
+                int cnt = _runs.Count;
+                for (int i = 0; i < cnt; i++)
+                {
+                    Run run = _runs[i];
+                    if (!run.geometryDirty)
+                        continue;
+                    BakeRun(run, worldToLocal);
+                    Stats.MergedRebakes++;
+                }
+            }
         }
 
         void Build(List<BatchElement> elements)
@@ -168,58 +230,125 @@ namespace FairyGUI
             _sources.Clear();
             _sourceVersions.Clear();
             _sourceMaterials.Clear();
+            _sourceTransforms.Clear();
+            _sourceRuns.Clear();
+            _singles.Clear();
+            _singleMaterials.Clear();
 
             foreach (Run run in _runs)
                 ReleaseRun(run);
             _runs.Clear();
 
-            CollectWatched();
+            CollectWatchedContainers();
 
             Matrix4x4 worldToLocal = _owner.cachedTransform.worldToLocalMatrix;
 
-            Run current = null;
+            sGroup.Clear();
+            Material groupMaterial = null;
             cnt = elements.Count;
             for (int i = 0; i < cnt; i++)
             {
                 BatchElement e = elements[i];
                 NGraphics g = GetMergeableGraphics(e);
-                if (g == null)
+                Material mat = g != null ? g.material : null;
+                if (g == null || mat == null)
                 {
-                    CloseRun(ref current);
-                    continue;
-                }
-
-                Material mat = g.material;
-                if (mat == null)
-                {
-                    CloseRun(ref current);
-                    if (g.meshRenderer != null)
+                    CloseGroup(groupMaterial, worldToLocal);
+                    groupMaterial = null;
+                    if (g != null && g.meshRenderer != null)
                         g.meshRenderer.forceRenderingOff = false;
                     continue;
                 }
 
-                if (current != null && !ReferenceEquals(current.material, mat))
-                    CloseRun(ref current);
+                if (sGroup.Count > 0 && !ReferenceEquals(groupMaterial, mat))
+                    CloseGroup(groupMaterial, worldToLocal);
 
-                if (current == null)
-                    current = OpenRun(mat, g);
-
-                AppendMesh(g, worldToLocal);
-                g.meshRenderer.forceRenderingOff = true;
-
-                _sources.Add(g);
-                _sourceVersions.Add(g._contentVersion);
-                _sourceMaterials.Add(mat);
+                groupMaterial = mat;
+                sGroup.Add(g);
             }
-            CloseRun(ref current);
+            CloseGroup(groupMaterial, worldToLocal);
 
-            cnt = _watched.Count;
+            cnt = _watchedContainers.Count;
             for (int i = 0; i < cnt; i++)
             {
-                Transform t = _watched[i];
+                Transform t = _watchedContainers[i];
                 if (t != null)
                     t.hasChanged = false;
             }
+        }
+
+        void CloseGroup(Material material, Matrix4x4 worldToLocal)
+        {
+            int groupSize = sGroup.Count;
+            if (groupSize == 0)
+                return;
+
+            if (groupSize == 1)
+            {
+                //a lone element gains nothing from merging: keep its own renderer,
+                //but watch its material - a change may make it mergeable with a neighbour
+                NGraphics g = sGroup[0];
+                g.meshRenderer.forceRenderingOff = false;
+                _singles.Add(g);
+                _singleMaterials.Add(material);
+            }
+            else
+            {
+                Run run = OpenRun(material, sGroup[0]);
+                for (int i = 0; i < groupSize; i++)
+                {
+                    NGraphics g = sGroup[i];
+                    run.sourceIndices.Add(_sources.Count);
+                    _sources.Add(g);
+                    _sourceVersions.Add(0); //filled by BakeRun
+                    _sourceMaterials.Add(material);
+                    _sourceTransforms.Add(g.gameObject.transform);
+                    _sourceRuns.Add(run);
+                    g.meshRenderer.forceRenderingOff = true;
+                }
+                BakeRun(run, worldToLocal);
+                _runs.Add(run);
+            }
+
+            sGroup.Clear();
+        }
+
+        void BakeRun(Run run, Matrix4x4 worldToLocal)
+        {
+            cVerts.Clear();
+            cColors.Clear();
+            cUV0.Clear();
+            cUV1.Clear();
+            cTriangles.Clear();
+            cHasUV1 = false;
+
+            int cnt = run.sourceIndices.Count;
+            for (int i = 0; i < cnt; i++)
+            {
+                int idx = run.sourceIndices[i];
+                NGraphics g = _sources[idx];
+                AppendMesh(g, worldToLocal);
+                _sourceVersions[idx] = g._contentVersion;
+                Transform t = _sourceTransforms[idx];
+                if (t != null)
+                    t.hasChanged = false;
+            }
+
+            run.mesh.Clear();
+            if (cVerts.Count > 0)
+            {
+                run.mesh.SetVertices(cVerts);
+                run.mesh.SetColors(cColors);
+                run.mesh.SetUVs(0, cUV0);
+                if (cHasUV1)
+                    run.mesh.SetUVs(1, cUV1);
+                run.mesh.SetTriangles(cTriangles, 0);
+            }
+
+            if (!Material.ReferenceEquals(run.material, run.meshRenderer.sharedMaterial))
+                run.meshRenderer.sharedMaterial = run.material;
+
+            run.geometryDirty = false;
         }
 
         NGraphics GetMergeableGraphics(BatchElement e)
@@ -248,13 +377,13 @@ namespace FairyGUI
             return g;
         }
 
-        void CollectWatched()
+        void CollectWatchedContainers()
         {
-            _watched.Clear();
-            CollectWatched(_owner);
+            _watchedContainers.Clear();
+            CollectWatchedContainers(_owner);
         }
 
-        void CollectWatched(Container container)
+        void CollectWatchedContainers(Container container)
         {
             int cnt = container.numChildren;
             for (int i = 0; i < cnt; i++)
@@ -263,12 +392,13 @@ namespace FairyGUI
                 if (!child.visible)
                     continue;
 
-                _watched.Add(child.cachedTransform);
-
                 //nested batching roots (clipping, masks, painting, nested fairyBatching)
                 //manage their own subtree; their content is not in our element list
                 if (child is Container c && (child._flags & DisplayObject.Flags.BatchingRoot) == 0)
-                    CollectWatched(c);
+                {
+                    _watchedContainers.Add(child.cachedTransform);
+                    CollectWatchedContainers(c);
+                }
             }
         }
 
@@ -306,13 +436,6 @@ namespace FairyGUI
             run.material = material;
             run.firstSource = firstSource;
             run.sortingOrder = -1;
-
-            cVerts.Clear();
-            cColors.Clear();
-            cUV0.Clear();
-            cUV1.Clear();
-            cTriangles.Clear();
-            cHasUV1 = false;
 
             return run;
         }
@@ -373,35 +496,14 @@ namespace FairyGUI
             }
         }
 
-        void CloseRun(ref Run run)
-        {
-            if (run == null)
-                return;
-
-            run.mesh.Clear();
-            if (cVerts.Count > 0)
-            {
-                run.mesh.SetVertices(cVerts);
-                run.mesh.SetColors(cColors);
-                run.mesh.SetUVs(0, cUV0);
-                if (cHasUV1)
-                    run.mesh.SetUVs(1, cUV1);
-                run.mesh.SetTriangles(cTriangles, 0);
-            }
-
-            if (!Material.ReferenceEquals(run.material, run.meshRenderer.sharedMaterial))
-                run.meshRenderer.sharedMaterial = run.material;
-
-            _runs.Add(run);
-            run = null;
-        }
-
         void ReleaseRun(Run run)
         {
             run.mesh.Clear();
             run.material = null;
             run.firstSource = null;
             run.sortingOrder = -1;
+            run.geometryDirty = false;
+            run.sourceIndices.Clear();
             run.gameObject.SetActive(false);
             _runPool.Add(run);
         }
@@ -418,7 +520,11 @@ namespace FairyGUI
             _sources.Clear();
             _sourceVersions.Clear();
             _sourceMaterials.Clear();
-            _watched.Clear();
+            _sourceTransforms.Clear();
+            _sourceRuns.Clear();
+            _singles.Clear();
+            _singleMaterials.Clear();
+            _watchedContainers.Clear();
 
             foreach (Run run in _runs)
                 DestroyRun(run);

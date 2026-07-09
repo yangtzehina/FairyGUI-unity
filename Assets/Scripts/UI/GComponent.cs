@@ -129,11 +129,27 @@ namespace FairyGUI
         /// <summary>
         /// Experimental. Bake children sharing a material into combined meshes
         /// (one draw call per material run). Implies fairyBatching.
+        /// Applied to the container that actually owns the content: clipping and masks
+        /// make a container its own batching fence, so for scrolling/overflow-hidden
+        /// components the switch must sit on the clip container, not the root -
+        /// this property finds that container automatically.
         /// </summary>
         public bool mergedBatching
         {
-            get { return rootContainer.mergedBatching; }
-            set { rootContainer.mergedBatching = value; }
+            get { return GetMergedBatchingTarget().mergedBatching; }
+            set { GetMergedBatchingTarget().mergedBatching = value; }
+        }
+
+        Container GetMergedBatchingTarget()
+        {
+            Container t = container;
+            while (t != null && t != rootContainer)
+            {
+                if (t.clipRect != null || t.mask != null)
+                    return t;
+                t = t.parent;
+            }
+            return rootContainer;
         }
 
         /// <summary>
