@@ -29,5 +29,40 @@ namespace FairyGUI.Mvvm
                     list.numItems = count;
             });
         }
+
+        /// <summary>
+        /// Keyed variant for non-virtual lists: when the count is unchanged, only items
+        /// whose key changed are re-rendered (a full re-render otherwise). Virtual lists
+        /// fall back to the plain refresh — their visible items are rebound on demand.
+        /// </summary>
+        public static Binder BindList<T, TKey>(this Binder binder, ViewModel vm, int propertyIndex,
+            GList list, IReadOnlyList<T> items, Func<T, TKey> keySelector, Action<int, T, GObject> renderItem)
+        {
+            var differ = new KeyedListDiffer<T, TKey>(keySelector);
+            list.itemRenderer = (index, obj) => renderItem(index, items[index], obj);
+            return binder.Bind(vm, propertyIndex, () =>
+            {
+                int count = items.Count;
+                if (list.isVirtual)
+                {
+                    if (list.numItems == count)
+                        list.RefreshVirtualList();
+                    else
+                        list.numItems = count;
+                    differ.Reset();
+                    return;
+                }
+
+                if (list.numItems != count)
+                {
+                    //numItems re-renders every index through itemRenderer
+                    list.numItems = count;
+                    differ.Record(items);
+                    return;
+                }
+
+                differ.Apply(items, i => renderItem(i, items[i], list.GetChildAt(i)));
+            });
+        }
     }
 }

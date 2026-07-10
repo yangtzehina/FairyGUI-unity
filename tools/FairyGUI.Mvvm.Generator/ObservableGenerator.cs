@@ -122,7 +122,7 @@ namespace FairyGUI.Mvvm.Generator
             for (int i = 0; i < fields.Count; i++)
             {
                 var field = fields[i];
-                string? propName = DerivePropertyName(field.Name);
+                string propName = DerivePropertyName(field.Name);
                 if (propName == null || propName == field.Name)
                 {
                     spc.ReportDiagnostic(Diagnostic.Create(BadFieldName,
@@ -182,7 +182,7 @@ namespace FairyGUI.Mvvm.Generator
             return count;
         }
 
-        static string? DerivePropertyName(string fieldName)
+        static string DerivePropertyName(string fieldName)
         {
             string body = fieldName;
             if (body.StartsWith("m_", StringComparison.Ordinal))
