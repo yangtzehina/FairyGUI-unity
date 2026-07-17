@@ -22,9 +22,15 @@ namespace FairyGUI
     /// Extract (full recompile). Dirty channels are driven by the caller in M1;
     /// the push protocol arrives in M4.
     ///
-    /// Current limits: single clip rect (M3), no fallback interleaving markers (M5).
-    /// Elements whose triangle pairs are not quads are skipped and reported via
-    /// lastSkippedPairs.
+    /// Clipping (M3): the external window (the container's or its mask parent's
+    /// clipRect) is a uniform tested against the scrolled position; internal nested
+    /// rect clips are folded by intersection into ClipBuffer entries referenced per
+    /// instance, so one segment can span many clip regions — draw count does not
+    /// grow with clip region count. Both support FairyGUI clipSoftness. Stencil-
+    /// masked subtrees are skipped and counted (fallback scope arrives in M5).
+    ///
+    /// Current limits: no fallback interleaving markers (M5). Elements whose
+    /// triangle pairs are not quads are skipped and reported via lastSkippedPairs.
     /// </summary>
     public class InstancedUIStream : IDisposable
     {
@@ -44,6 +50,7 @@ namespace FairyGUI
             public int start;
             public int count;
             public uint flags;
+            public uint clipIndex;
         }
 
         struct PendingLeaf
@@ -52,12 +59,16 @@ namespace FairyGUI
             public Matrix4x4 matrix;
             public Texture texture;
             public uint flags;
+            public uint clipIndex;
         }
 
         readonly List<Segment> _segments = new List<Segment>();
         readonly List<LeafRange> _leaves = new List<LeafRange>();
         readonly List<PendingLeaf> _pending = new List<PendingLeaf>();
         readonly List<AdjacencyEntry> _entries = new List<AdjacencyEntry>();
+        //internal clip regions, content-space at scroll 0, WITHOUT drawOffset
+        //(offset added at upload); entry 0 is the "no clip" sentinel
+        readonly List<ClipEntry> _clipEntries = new List<ClipEntry>();
         readonly List<QuadInstance> _quads = new List<QuadInstance>();
         readonly Dictionary<Texture, Material> _materialCache = new Dictionary<Texture, Material>();
 
@@ -66,11 +77,15 @@ namespace FairyGUI
         Mesh _quadMesh;
         Shader _shader;
         ComputeBuffer _buffer;
+        ComputeBuffer _clipBuffer;
+        ClipEntry[] _clipUploadArray;
         QuadInstance[] _uploadArray;
         Vector2 _scrollOffset;
         Vector4 _clipRect;
+        Vector4 _clipSoft;
         Vector2 _drawOffset;
         int _skippedPairs;
+        int _maskedSubtrees;
 
         static readonly List<Vector3> sVerts = new List<Vector3>();
         static readonly List<Vector2> sUVs = new List<Vector2>();
@@ -89,10 +104,37 @@ namespace FairyGUI
         public int quadCount { get { return _quads.Count; } }
 
         /// <summary>
+        /// Internal clip regions found by the last Extract, including the entry-0
+        /// "no clip" sentinel.
+        /// </summary>
+        public int clipEntryCount { get { return _clipEntries.Count; } }
+
+        /// <summary>
         /// Triangle pairs that could not be reassembled as quads in the last Extract —
         /// content for the mesh fallback path (M5).
         /// </summary>
         public int lastSkippedPairs { get { return _skippedPairs; } }
+
+        /// <summary>
+        /// Stencil-masked subtrees skipped by the last Extract — content for the
+        /// fallback scope path (M5).
+        /// </summary>
+        public int lastMaskedSubtrees { get { return _maskedSubtrees; } }
+
+        /// <summary>Validation probe: the clip entry index a leaf was stamped with.</summary>
+        public uint GetLeafClipIndex(NGraphics graphics)
+        {
+            for (int i = 0; i < _leaves.Count; i++)
+                if (_leaves[i].graphics == graphics)
+                    return _leaves[i].clipIndex;
+            return 0;
+        }
+
+        /// <summary>Validation probe: a clip entry by index.</summary>
+        public ClipEntry GetClipEntry(int index)
+        {
+            return _clipEntries[index];
+        }
 
         /// <summary>
         /// drawOffset shifts the stream in container space (0 for in-place rendering,
@@ -114,17 +156,54 @@ namespace FairyGUI
             };
             _quadMesh.triangles = new[] { 0, 1, 2, 2, 1, 3 };
             _quadMesh.UploadMeshData(false);
+        }
 
-            Rect? clip = container.clipRect;
-            if (clip != null)
+        /// <summary>
+        /// The external window: a clip on the container itself, or on its parent
+        /// (a ScrollPane's mask container). It does NOT scroll with the content, so
+        /// it stays a uniform tested against the scrolled position; internal clips
+        /// found during the walk go to the ClipBuffer instead.
+        /// </summary>
+        void ComputeExternalWindow()
+        {
+            _clipRect = new Vector4(-1e30f, -1e30f, 1e30f, 1e30f);
+            _clipSoft = Vector4.zero;
+
+            Container clipOwner = null;
+            if (_container.clipRect != null)
+                clipOwner = _container;
+            else if (_container.parent != null && _container.parent.clipRect != null)
+                clipOwner = _container.parent;
+            if (clipOwner == null)
+                return;
+
+            Matrix4x4 m = clipOwner == _container
+                ? Matrix4x4.identity
+                : _container.cachedTransform.worldToLocalMatrix * clipOwner.cachedTransform.localToWorldMatrix;
+            _clipRect = TransformClipRect((Rect)clipOwner.clipRect, m);
+            if (clipOwner.clipSoftness != null)
             {
-                Rect r = (Rect)clip;
-                //container-local Unity coords are y-down (FairyGUI negates y)
-                _clipRect = new Vector4(r.xMin + drawOffset.x, -r.yMax + drawOffset.y,
-                    r.xMax + drawOffset.x, -r.yMin + drawOffset.y);
+                //FairyGUI (left,top,right,bottom) in y-down space -> our
+                //(minX,minY,maxX,maxY) with y negated: top becomes yMax
+                Vector4 s = (Vector4)clipOwner.clipSoftness;
+                _clipSoft = new Vector4(s.x, s.w, s.z, s.y);
             }
-            else
-                _clipRect = new Vector4(float.MinValue, float.MinValue, float.MaxValue, float.MaxValue);
+        }
+
+        /// <summary>
+        /// FairyGUI clip Rect (y-down local space) -> (xMin,yMin,xMax,yMax) AABB in
+        /// stream-container-local space including drawOffset.
+        /// </summary>
+        Vector4 TransformClipRect(Rect r, Matrix4x4 m)
+        {
+            Vector2 c0 = m.MultiplyPoint3x4(new Vector3(r.xMin, -r.yMax, 0));
+            Vector2 c1 = m.MultiplyPoint3x4(new Vector3(r.xMax, -r.yMax, 0));
+            Vector2 c2 = m.MultiplyPoint3x4(new Vector3(r.xMin, -r.yMin, 0));
+            Vector2 c3 = m.MultiplyPoint3x4(new Vector3(r.xMax, -r.yMin, 0));
+            Vector2 bmin = Vector2.Min(Vector2.Min(c0, c1), Vector2.Min(c2, c3));
+            Vector2 bmax = Vector2.Max(Vector2.Max(c0, c1), Vector2.Max(c2, c3));
+            return new Vector4(bmin.x + _drawOffset.x, bmin.y + _drawOffset.y,
+                bmax.x + _drawOffset.x, bmax.y + _drawOffset.y);
         }
 
         /// <summary>
@@ -143,10 +222,15 @@ namespace FairyGUI
                 _quads.Clear();
                 _pending.Clear();
                 _entries.Clear();
+                _clipEntries.Clear();
+                _clipEntries.Add(ClipEntry.None);
                 _skippedPairs = 0;
+                _maskedSubtrees = 0;
+
+                ComputeExternalWindow();
 
                 Matrix4x4 worldToLocal = _container.cachedTransform.worldToLocalMatrix;
-                ExtractContainer(_container, worldToLocal);
+                ExtractContainer(_container, worldToLocal, 0);
 
                 if (_sortAdjacency)
                     AdjacencySorter.Sort(_entries);
@@ -156,12 +240,19 @@ namespace FairyGUI
                 if (_buffer != null)
                     _buffer.Release();
                 _buffer = null;
+                if (_clipBuffer != null)
+                    _clipBuffer.Release();
+                _clipBuffer = null;
                 if (_quads.Count == 0)
                     return;
 
                 _uploadArray = _quads.ToArray();
                 _buffer = new ComputeBuffer(_uploadArray.Length, QuadInstance.Stride, ComputeBufferType.Structured);
                 _buffer.SetData(_uploadArray);
+
+                _clipUploadArray = _clipEntries.ToArray();
+                _clipBuffer = new ComputeBuffer(_clipUploadArray.Length, ClipEntry.Stride, ComputeBufferType.Structured);
+                _clipBuffer.SetData(_clipUploadArray);
 
                 foreach (var seg in _segments)
                 {
@@ -176,12 +267,13 @@ namespace FairyGUI
                     seg.material = mat;
                     seg.props = new MaterialPropertyBlock();
                     seg.props.SetBuffer("_Instances", _buffer);
+                    seg.props.SetBuffer("_Clips", _clipBuffer);
                     seg.props.SetInt("_InstanceStart", seg.start);
                 }
             }
         }
 
-        void ExtractContainer(Container container, Matrix4x4 worldToLocal)
+        void ExtractContainer(Container container, Matrix4x4 worldToLocal, uint clipIndex)
         {
             int cnt = container.numChildren;
             for (int i = 0; i < cnt; i++)
@@ -191,21 +283,65 @@ namespace FairyGUI
                     continue;
 
                 if (child.graphics != null && child.graphics.texture != null)
-                    ExtractLeaf(child.graphics, worldToLocal);
+                    ExtractLeaf(child.graphics, worldToLocal, clipIndex);
 
                 if (child.graphics != null && child.graphics.subInstances != null)
                 {
                     foreach (var sub in child.graphics.subInstances)
                         if (sub.texture != null)
-                            ExtractLeaf(sub, worldToLocal);
+                            ExtractLeaf(sub, worldToLocal, clipIndex);
                 }
 
                 if (child is Container c)
-                    ExtractContainer(c, worldToLocal);
+                {
+                    //stencil-masked scopes go to the fallback renderer (M5); skip
+                    if (c.mask != null)
+                    {
+                        _maskedSubtrees++;
+                        continue;
+                    }
+                    uint childClip = clipIndex;
+                    if (c.clipRect != null)
+                        childClip = PushClip(c, worldToLocal, clipIndex);
+                    ExtractContainer(c, worldToLocal, childClip);
+                }
             }
         }
 
-        void ExtractLeaf(NGraphics graphics, Matrix4x4 worldToLocal)
+        /// <summary>
+        /// Registers an internal clip region: the container's clipRect transformed to
+        /// stream-local space, folded (intersected) with the enclosing region — same
+        /// semantics as UpdateContext.EnterClipping. Identical regions are deduped.
+        /// </summary>
+        uint PushClip(Container c, Matrix4x4 worldToLocal, uint parentIndex)
+        {
+            Matrix4x4 m = worldToLocal * c.cachedTransform.localToWorldMatrix;
+            Vector4 rect = TransformClipRect((Rect)c.clipRect, m);
+
+            if (parentIndex != 0)
+            {
+                Vector4 p = _clipEntries[(int)parentIndex].rect;
+                rect = new Vector4(Mathf.Max(rect.x, p.x), Mathf.Max(rect.y, p.y),
+                    Mathf.Min(rect.z, p.z), Mathf.Min(rect.w, p.w));
+            }
+
+            Vector4 soft = Vector4.zero;
+            if (c.clipSoftness != null)
+            {
+                Vector4 s = (Vector4)c.clipSoftness;
+                soft = new Vector4(s.x, s.w, s.z, s.y);
+            }
+
+            for (int i = 1; i < _clipEntries.Count; i++)
+            {
+                if (_clipEntries[i].rect == rect && _clipEntries[i].soft == soft)
+                    return (uint)i;
+            }
+            _clipEntries.Add(new ClipEntry { rect = rect, soft = soft });
+            return (uint)(_clipEntries.Count - 1);
+        }
+
+        void ExtractLeaf(NGraphics graphics, Matrix4x4 worldToLocal, uint clipIndex)
         {
             Mesh mesh = graphics.mesh;
             if (mesh == null || mesh.vertexCount == 0)
@@ -218,15 +354,25 @@ namespace FairyGUI
             uint flags = alphaTex ? QuadInstance.FlagAlphaTexture : 0u;
             Matrix4x4 m = worldToLocal * graphics.gameObject.transform.localToWorldMatrix;
 
-            //container-local AABB for the overlap test (transform the mesh AABB's
-            //4 xy corners so rotated leaves stay conservative)
+            //stream-local AABB for the overlap test (transform the mesh AABB's
+            //4 xy corners so rotated leaves stay conservative), in the same
+            //offset space as the clip entries
             Bounds mb = mesh.bounds;
             Vector2 c0 = m.MultiplyPoint3x4(new Vector3(mb.min.x, mb.min.y, 0));
             Vector2 c1 = m.MultiplyPoint3x4(new Vector3(mb.max.x, mb.min.y, 0));
             Vector2 c2 = m.MultiplyPoint3x4(new Vector3(mb.min.x, mb.max.y, 0));
             Vector2 c3 = m.MultiplyPoint3x4(new Vector3(mb.max.x, mb.max.y, 0));
-            Vector2 bmin = Vector2.Min(Vector2.Min(c0, c1), Vector2.Min(c2, c3));
-            Vector2 bmax = Vector2.Max(Vector2.Max(c0, c1), Vector2.Max(c2, c3));
+            Vector2 bmin = Vector2.Min(Vector2.Min(c0, c1), Vector2.Min(c2, c3)) + _drawOffset;
+            Vector2 bmax = Vector2.Max(Vector2.Max(c0, c1), Vector2.Max(c2, c3)) + _drawOffset;
+
+            //clamp sort bounds to the clip window: parts a clip discards cannot
+            //cause visual overlap, so they should not block segment merging either
+            if (clipIndex != 0)
+            {
+                Vector4 cr = _clipEntries[(int)clipIndex].rect;
+                bmin = Vector2.Max(bmin, new Vector2(cr.x, cr.y));
+                bmax = Vector2.Min(bmax, new Vector2(cr.z, cr.w));
+            }
 
             _entries.Add(new AdjacencyEntry
             {
@@ -234,7 +380,7 @@ namespace FairyGUI
                 x0 = bmin.x, y0 = bmin.y, x1 = bmax.x, y1 = bmax.y,
                 payload = _pending.Count
             });
-            _pending.Add(new PendingLeaf { graphics = graphics, matrix = m, texture = tex, flags = flags });
+            _pending.Add(new PendingLeaf { graphics = graphics, matrix = m, texture = tex, flags = flags, clipIndex = clipIndex });
         }
 
         void AppendLeaf(PendingLeaf leaf)
@@ -258,12 +404,25 @@ namespace FairyGUI
             mesh.GetColors(sColors);
             mesh.GetTriangles(sTris, 0);
 
-            var range = new LeafRange { graphics = leaf.graphics, start = _quads.Count, flags = leaf.flags };
+            var range = new LeafRange { graphics = leaf.graphics, start = _quads.Count, flags = leaf.flags, clipIndex = leaf.clipIndex };
             int skipped;
             range.count = QuadReassembler.Append(_quads, sVerts, sUVs, sColors, sTris, leaf.matrix, _drawOffset, leaf.flags, out skipped);
             _skippedPairs += skipped;
+            StampClipIndex(range.start, range.count, leaf.clipIndex);
             seg.count = _quads.Count - seg.start;
             _leaves.Add(range);
+        }
+
+        void StampClipIndex(int start, int count, uint clipIndex)
+        {
+            if (clipIndex == 0)
+                return;
+            for (int i = start; i < start + count; i++)
+            {
+                QuadInstance q = _quads[i];
+                q.clipIndex = clipIndex;
+                _quads[i] = q;
+            }
         }
 
         /// <summary>
@@ -321,8 +480,10 @@ namespace FairyGUI
 
                 for (int i = 0; i < rebuilt; i++)
                 {
-                    _quads[range.start + i] = sLeafScratch[i];
-                    _uploadArray[range.start + i] = sLeafScratch[i];
+                    QuadInstance q = sLeafScratch[i];
+                    q.clipIndex = range.clipIndex;
+                    _quads[range.start + i] = q;
+                    _uploadArray[range.start + i] = q;
                 }
                 _buffer.SetData(_uploadArray, range.start, range.start, rebuilt);
                 return true;
@@ -354,6 +515,7 @@ namespace FairyGUI
                     seg.props.SetMatrix("_ContainerL2W", l2w);
                     seg.props.SetVector("_ScrollOffset", _scrollOffset);
                     seg.props.SetVector("_ClipRect", _clipRect);
+                    seg.props.SetVector("_ClipSoft", _clipSoft);
                     seg.props.SetFloat("_SegZ", seg.z);
 
                     var bounds = new Bounds(new Vector3(0, 0, seg.z), new Vector3(100000, 100000, 1));
@@ -376,6 +538,11 @@ namespace FairyGUI
             {
                 _buffer.Release();
                 _buffer = null;
+            }
+            if (_clipBuffer != null)
+            {
+                _clipBuffer.Release();
+                _clipBuffer = null;
             }
             foreach (var kv in _materialCache)
             {
