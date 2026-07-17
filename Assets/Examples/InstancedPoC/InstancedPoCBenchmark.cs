@@ -6,7 +6,7 @@ using UnityEngine;
 using Unity.Profiling;
 
 /// <summary>
-/// Measures the GPU-instanced PoC against the same phases as MergedBatchBenchmark:
+/// Measures the v4 M1 InstancedUIStream against the same phases as MergedBatchBenchmark:
 /// idle (no updates), scroll (one uniform write per frame), and textchurn (partial
 /// instance-buffer upload per frame). Marker medians land in JSON alongside the
 /// engine counters so the numbers line up with the earlier MergedBatch runs.
@@ -31,7 +31,7 @@ public class InstancedPoCBenchmark : MonoBehaviour
     string _path;
     int _samples;
 
-    InstancedUIRenderer _renderer;
+    InstancedUIStream _stream;
     int _phase = -1;
     int _frame;
     float _scroll;
@@ -52,13 +52,13 @@ public class InstancedPoCBenchmark : MonoBehaviour
 
     void Start()
     {
-        _renderer = new InstancedUIRenderer(_container, new Vector2(600, 0));
-        _renderer.Extract();
-        Debug.Log($"InstancedPoC: groups={_renderer.groupCount} quads={_renderer.quadCount}");
+        _stream = new InstancedUIStream(_container, new Vector2(600, 0));
+        _stream.Extract();
+        Debug.Log($"InstancedPoC: segments={_stream.segmentCount} skipped={_stream.lastSkippedPairs} quads={_stream.quadCount}");
         _json = new StringBuilder();
         _json.Append("{\n");
-        _json.Append("  \"groups\": ").Append(_renderer.groupCount).Append(",\n");
-        _json.Append("  \"quads\": ").Append(_renderer.quadCount).Append(",\n");
+        _json.Append("  \"segments\": ").Append(_stream.segmentCount).Append(",\n");
+        _json.Append("  \"quads\": ").Append(_stream.quadCount).Append(",\n");
         NextPhase();
     }
 
@@ -74,13 +74,13 @@ public class InstancedPoCBenchmark : MonoBehaviour
         }
         _frame = -Warmup;
         _scroll = 0;
-        _renderer.SetScrollOffset(Vector2.zero);
+        _stream.SetScrollOffset(Vector2.zero);
         StartRecorders();
     }
 
     void LateUpdate()
     {
-        if (_phase >= PhaseCount || _renderer == null)
+        if (_phase >= PhaseCount || _stream == null)
             return;
 
         if (_phase == 1 && _frame >= -1)
@@ -88,18 +88,18 @@ public class InstancedPoCBenchmark : MonoBehaviour
             _scroll += 130;
             if (_scroll > 5000) _scroll = 0;
             //y-down container: scrolling down moves content up (+y in local coords)
-            _renderer.SetScrollOffset(new Vector2(0, _scroll));
+            _stream.SetScrollOffset(new Vector2(0, _scroll));
         }
 
         if (_phase == 2 && _frame >= -1)
         {
             _churnText.text = (_frame & 1) == 0 ? "888" : "999";
             //the TextField's mesh rebuilt during this frame's stage update; mirror it
-            if (!_renderer.UpdateLeaf(_churnText.graphics))
-                _renderer.Extract();
+            if (!_stream.UpdateLeaf(_churnText.graphics))
+                _stream.Extract();
         }
 
-        _renderer.Render();
+        _stream.Render();
 
         if (_frame >= 0)
         {
@@ -131,17 +131,17 @@ public class InstancedPoCBenchmark : MonoBehaviour
         _json.Append("  \"samplesPerPhase\": ").Append(_samples).Append("\n}\n");
         System.IO.File.WriteAllText(_path, _json.ToString());
         Debug.Log("InstancedPoCBenchmark done: " + _path);
-        _renderer.Dispose();
-        _renderer = null;
+        _stream.Dispose();
+        _stream = null;
         Destroy(gameObject);
     }
 
     void OnDestroy()
     {
-        if (_renderer != null)
+        if (_stream != null)
         {
-            _renderer.Dispose();
-            _renderer = null;
+            _stream.Dispose();
+            _stream = null;
         }
     }
 
