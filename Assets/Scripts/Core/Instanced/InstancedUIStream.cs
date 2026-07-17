@@ -9,10 +9,12 @@ using Unity.Profiling;
 namespace FairyGUI
 {
     /// <summary>
-    /// v4 M1 core stream: extracts a container's visible leaves into GPU-resident quad
-    /// instances (QuadReassembler), segments them on texture change in tree draw order
-    /// (segments z-stepped so transparent sorting preserves submission order), and
-    /// draws each segment with one instanced call from a shared unit quad.
+    /// v4 core stream: extracts a container's visible leaves into GPU-resident quad
+    /// instances (QuadReassembler), adjacency-sorts them FairyBatching-style so leaves
+    /// sharing a texture become contiguous where draw order may legally change (M2),
+    /// segments the result on texture change (segments z-stepped so transparent
+    /// sorting preserves submission order), and draws each segment with one instanced
+    /// call from a shared unit quad.
     ///
     /// Update tiers (design §4.2): whole-stream movement is the container matrix
     /// (free); scrolling is SetScrollOffset (one uniform); a single leaf's content
@@ -20,9 +22,9 @@ namespace FairyGUI
     /// Extract (full recompile). Dirty channels are driven by the caller in M1;
     /// the push protocol arrives in M4.
     ///
-    /// M1 limits: no adjacency sorting (M2), single clip rect (M3), no fallback
-    /// interleaving markers (M5). Elements whose triangle pairs are not quads are
-    /// skipped and reported via lastSkippedPairs.
+    /// Current limits: single clip rect (M3), no fallback interleaving markers (M5).
+    /// Elements whose triangle pairs are not quads are skipped and reported via
+    /// lastSkippedPairs.
     /// </summary>
     public class InstancedUIStream : IDisposable
     {
@@ -44,12 +46,23 @@ namespace FairyGUI
             public uint flags;
         }
 
+        struct PendingLeaf
+        {
+            public NGraphics graphics;
+            public Matrix4x4 matrix;
+            public Texture texture;
+            public uint flags;
+        }
+
         readonly List<Segment> _segments = new List<Segment>();
         readonly List<LeafRange> _leaves = new List<LeafRange>();
+        readonly List<PendingLeaf> _pending = new List<PendingLeaf>();
+        readonly List<AdjacencyEntry> _entries = new List<AdjacencyEntry>();
         readonly List<QuadInstance> _quads = new List<QuadInstance>();
         readonly Dictionary<Texture, Material> _materialCache = new Dictionary<Texture, Material>();
 
         Container _container;
+        bool _sortAdjacency;
         Mesh _quadMesh;
         Shader _shader;
         ComputeBuffer _buffer;
@@ -83,12 +96,14 @@ namespace FairyGUI
 
         /// <summary>
         /// drawOffset shifts the stream in container space (0 for in-place rendering,
-        /// non-zero for side-by-side verification replicas).
+        /// non-zero for side-by-side verification replicas). sortAdjacency applies the
+        /// FairyBatching adjacency sort during Extract to shrink segment count.
         /// </summary>
-        public InstancedUIStream(Container container, Vector2 drawOffset = default)
+        public InstancedUIStream(Container container, Vector2 drawOffset = default, bool sortAdjacency = true)
         {
             _container = container;
             _drawOffset = drawOffset;
+            _sortAdjacency = sortAdjacency;
             _shader = Shader.Find("FairyGUI/InstancedUI");
 
             _quadMesh = new Mesh();
@@ -113,8 +128,9 @@ namespace FairyGUI
         }
 
         /// <summary>
-        /// Full recompile: walk visible leaves, reassemble quads, slice segments,
-        /// upload the instance buffer.
+        /// Full recompile: walk visible leaves, adjacency-sort them (segment count
+        /// shrinks where draw order may legally change), reassemble quads, slice
+        /// segments, upload the instance buffer.
         /// </summary>
         public void Extract()
         {
@@ -125,10 +141,17 @@ namespace FairyGUI
                 _segments.Clear();
                 _leaves.Clear();
                 _quads.Clear();
+                _pending.Clear();
+                _entries.Clear();
                 _skippedPairs = 0;
 
                 Matrix4x4 worldToLocal = _container.cachedTransform.worldToLocalMatrix;
                 ExtractContainer(_container, worldToLocal);
+
+                if (_sortAdjacency)
+                    AdjacencySorter.Sort(_entries);
+                for (int i = 0; i < _entries.Count; i++)
+                    AppendLeaf(_pending[_entries[i].payload]);
 
                 if (_buffer != null)
                     _buffer.Release();
@@ -193,30 +216,51 @@ namespace FairyGUI
 
             bool alphaTex = graphics.shader == ShaderConfig.textShader;
             uint flags = alphaTex ? QuadInstance.FlagAlphaTexture : 0u;
+            Matrix4x4 m = worldToLocal * graphics.gameObject.transform.localToWorldMatrix;
 
-            //segment on texture change, preserving tree draw order (design §5;
-            //adjacency sorting shrinks segment count in M2)
+            //container-local AABB for the overlap test (transform the mesh AABB's
+            //4 xy corners so rotated leaves stay conservative)
+            Bounds mb = mesh.bounds;
+            Vector2 c0 = m.MultiplyPoint3x4(new Vector3(mb.min.x, mb.min.y, 0));
+            Vector2 c1 = m.MultiplyPoint3x4(new Vector3(mb.max.x, mb.min.y, 0));
+            Vector2 c2 = m.MultiplyPoint3x4(new Vector3(mb.min.x, mb.max.y, 0));
+            Vector2 c3 = m.MultiplyPoint3x4(new Vector3(mb.max.x, mb.max.y, 0));
+            Vector2 bmin = Vector2.Min(Vector2.Min(c0, c1), Vector2.Min(c2, c3));
+            Vector2 bmax = Vector2.Max(Vector2.Max(c0, c1), Vector2.Max(c2, c3));
+
+            _entries.Add(new AdjacencyEntry
+            {
+                key = tex,
+                x0 = bmin.x, y0 = bmin.y, x1 = bmax.x, y1 = bmax.y,
+                payload = _pending.Count
+            });
+            _pending.Add(new PendingLeaf { graphics = graphics, matrix = m, texture = tex, flags = flags });
+        }
+
+        void AppendLeaf(PendingLeaf leaf)
+        {
+            //segment on texture change in (sorted) submission order
             Segment seg = _segments.Count > 0 ? _segments[_segments.Count - 1] : null;
-            if (seg == null || seg.texture != tex)
+            if (seg == null || seg.texture != leaf.texture)
             {
                 seg = new Segment
                 {
-                    texture = tex,
+                    texture = leaf.texture,
                     z = -0.5f * _segments.Count,
                     start = _quads.Count
                 };
                 _segments.Add(seg);
             }
 
+            Mesh mesh = leaf.graphics.mesh;
             mesh.GetVertices(sVerts);
             mesh.GetUVs(0, sUVs);
             mesh.GetColors(sColors);
             mesh.GetTriangles(sTris, 0);
 
-            Matrix4x4 m = worldToLocal * graphics.gameObject.transform.localToWorldMatrix;
-            var range = new LeafRange { graphics = graphics, start = _quads.Count, flags = flags };
+            var range = new LeafRange { graphics = leaf.graphics, start = _quads.Count, flags = leaf.flags };
             int skipped;
-            range.count = QuadReassembler.Append(_quads, sVerts, sUVs, sColors, sTris, m, _drawOffset, flags, out skipped);
+            range.count = QuadReassembler.Append(_quads, sVerts, sUVs, sColors, sTris, leaf.matrix, _drawOffset, leaf.flags, out skipped);
             _skippedPairs += skipped;
             seg.count = _quads.Count - seg.start;
             _leaves.Add(range);
