@@ -108,6 +108,10 @@ namespace FairyGUI
             get { return _propertyBlock != null; }
         }
 
+        //SDF leaf emission (M7) reproduces mesh colors without reading the mesh
+        internal Color _tintColor { get { return _color; } }
+        internal float _currentAlpha { get { return _alpha; } }
+
         public class VertexMatrix
         {
             public Vector3 cameraPos;

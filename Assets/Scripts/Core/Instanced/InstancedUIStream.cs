@@ -177,6 +177,7 @@ namespace FairyGUI
             public int segIndex;
             public uint flags;
             public uint clipIndex;
+            public bool sdf; //M7: tier-2 updates re-emit analytically, not from mesh
         }
 
         struct PendingLeaf
@@ -188,6 +189,7 @@ namespace FairyGUI
             public int stageStart;    //quads pre-built into _staging at walk time
             public int stageCount;
             public bool instanceable; //false: non-quad topology -> native fallback
+            public bool sdf;          //M7: quads carry analytic SDF coverage
         }
 
         readonly List<Segment> _segments = new List<Segment>();
@@ -825,23 +827,37 @@ namespace FairyGUI
             //makes it immovable — others may still sort past it when they do not
             //overlap, exactly the legality rule native FairyBatching uses
             var p = new PendingLeaf { graphics = graphics, texture = tex, flags = flags, clipIndex = clipIndex, stageStart = _staging.Count };
-            mesh.GetVertices(sVerts);
-            mesh.GetUVs(0, sUVs);
-            mesh.GetColors(sColors);
-            mesh.GetTriangles(sTris, 0);
-            int skipped;
-            p.stageCount = QuadReassembler.Append(_staging, sVerts, sUVs, sColors, sTris, m, _drawOffset, flags, out skipped);
-            if (skipped > 0)
+
+            //M7: rounded/stroked rect and circle shapes bypass their triangulated
+            //mesh entirely — analytic SDF coverage from 1-2 quads
+            int sdfCount = EmitSdfQuads(graphics, m, _staging);
+            if (sdfCount > 0)
             {
-                _skippedPairs += skipped;
-                _staging.RemoveRange(p.stageStart, p.stageCount);
-                p.stageCount = 0;
-                p.instanceable = false;
+                p.stageCount = sdfCount;
+                p.instanceable = true;
+                p.sdf = true;
+                StampClipIndex(_staging, p.stageStart, p.stageCount, clipIndex);
             }
             else
             {
-                p.instanceable = true;
-                StampClipIndex(_staging, p.stageStart, p.stageCount, clipIndex);
+                mesh.GetVertices(sVerts);
+                mesh.GetUVs(0, sUVs);
+                mesh.GetColors(sColors);
+                mesh.GetTriangles(sTris, 0);
+                int skipped;
+                p.stageCount = QuadReassembler.Append(_staging, sVerts, sUVs, sColors, sTris, m, _drawOffset, flags, out skipped);
+                if (skipped > 0)
+                {
+                    _skippedPairs += skipped;
+                    _staging.RemoveRange(p.stageStart, p.stageCount);
+                    p.stageCount = 0;
+                    p.instanceable = false;
+                }
+                else
+                {
+                    p.instanceable = true;
+                    StampClipIndex(_staging, p.stageStart, p.stageCount, clipIndex);
+                }
             }
 
             _entries.Add(new AdjacencyEntry
@@ -860,6 +876,90 @@ namespace FairyGUI
         /// run share a sortingOrder slot below the barrier's own order, so native
         /// fallback renderers interleave correctly between runs.
         /// </summary>
+        /// <summary>
+        /// M7: shapes whose silhouette is an analytic SDF skip mesh reassembly —
+        /// a rounded/stroked rect is 1-2 quads (fill inset by the border width,
+        /// border band [edge-width, edge], per RoundedRectMesh's geometry), a full
+        /// circle is a rounded rect with maxed radii. Returns emitted quad count,
+        /// 0 when the factory is not SDF-expressible (gradient ellipses, pies,
+        /// rotated/non-uniformly-scaled leaves fall back to the mesh path).
+        /// </summary>
+        int EmitSdfQuads(NGraphics graphics, Matrix4x4 m, List<QuadInstance> dst)
+        {
+            float rBL, rBR, rTL, rTR, lineWidth;
+            Color32 lineColor;
+            Color fill;
+            Rect local;
+
+            if (graphics.meshFactory is RoundedRectMesh rrm)
+            {
+                local = rrm.drawRect != null ? (Rect)rrm.drawRect : graphics.contentRect;
+                fill = rrm.fillColor != null ? (Color)(Color32)rrm.fillColor : graphics._tintColor;
+                lineWidth = rrm.lineWidth;
+                lineColor = rrm.lineColor;
+                //corner names map directly: FairyGUI's visual top-left is the
+                //(minX, maxY) quadrant of our y-negated quad-local space
+                float rMax = Mathf.Min(local.width, local.height) * 0.5f;
+                rTL = Mathf.Min(rrm.topLeftRadius, rMax);
+                rTR = Mathf.Min(rrm.topRightRadius, rMax);
+                rBL = Mathf.Min(rrm.bottomLeftRadius, rMax);
+                rBR = Mathf.Min(rrm.bottomRightRadius, rMax);
+            }
+            else if (graphics.meshFactory is EllipseMesh el)
+            {
+                local = el.drawRect != null ? (Rect)el.drawRect : graphics.contentRect;
+                if (el.centerColor != null || el.startDegree != 0 || el.endDegreee != 360
+                    || Mathf.Abs(local.width - local.height) > 0.01f)
+                    return 0; //gradients, pies and true ellipses stay on the mesh path
+                fill = el.fillColor != null ? (Color)(Color32)el.fillColor : graphics._tintColor;
+                lineWidth = el.lineWidth;
+                lineColor = el.lineColor;
+                rBL = rBR = rTL = rTR = local.width * 0.5f;
+            }
+            else
+                return 0;
+
+            //transform to stream-local; the SDF encodes an axis-aligned rect, so a
+            //rotated leaf falls back; non-uniform scale would need elliptical
+            //corners — fall back there too (native triangulation stays exact)
+            Vector2 p0 = m.MultiplyPoint3x4(new Vector3(local.xMin, -local.yMax, 0));
+            Vector2 p1 = m.MultiplyPoint3x4(new Vector3(local.xMax, -local.yMin, 0));
+            if (Mathf.Abs(m.m01) > 1e-4f || Mathf.Abs(m.m10) > 1e-4f)
+                return 0;
+            Vector2 bmin = Vector2.Min(p0, p1) + _drawOffset;
+            Vector2 size = Vector2.Max(p0, p1) - Vector2.Min(p0, p1);
+            if (size.x <= 0 || size.y <= 0)
+                return 0;
+            float scaleX = local.width > 0 ? size.x / local.width : 1;
+            float scaleY = local.height > 0 ? size.y / local.height : 1;
+            if (Mathf.Abs(scaleX - scaleY) > 0.01f)
+                return 0;
+            float s = scaleX;
+            if (Mathf.Max(Mathf.Max(rBL, rBR), Mathf.Max(rTL, rTR)) * s > 255 || lineWidth * s > 255)
+                return 0; //beyond the packed byte range: keep native
+
+            float alpha = graphics._currentAlpha;
+            uint radii = QuadInstance.PackRadii(rBL * s, rBR * s, rTL * s, rTR * s);
+            var rect = new Vector4(bmin.x, bmin.y, size.x, size.y);
+            uint wBits;
+
+            //fill is always emitted (quad count stays stable under tint changes);
+            //the border quad appears only when a line width exists
+            Color fc = fill;
+            fc.a *= alpha;
+            wBits = QuadInstance.PackBorderWidth(QuadInstance.FlagSdfFill, lineWidth * s);
+            dst.Add(new QuadInstance { rect = rect, color = fc, flags = wBits, padding = radii });
+            if (lineWidth > 0)
+            {
+                Color lc = lineColor;
+                lc.a *= alpha;
+                wBits = QuadInstance.PackBorderWidth(QuadInstance.FlagSdfBorder, lineWidth * s);
+                dst.Add(new QuadInstance { rect = rect, color = lc, flags = wBits, padding = radii });
+                return 2;
+            }
+            return 1;
+        }
+
         void BuildSegments()
         {
             Segment seg = null;
@@ -895,7 +995,8 @@ namespace FairyGUI
                     count = leaf.stageCount,
                     segIndex = _segments.Count - 1,
                     flags = leaf.flags,
-                    clipIndex = leaf.clipIndex
+                    clipIndex = leaf.clipIndex,
+                    sdf = leaf.sdf
                 };
                 for (int q = 0; q < leaf.stageCount; q++)
                     _quads.Add(_staging[leaf.stageStart + q]);
@@ -955,19 +1056,31 @@ namespace FairyGUI
                 if (mesh == null)
                     return false;
 
-                mesh.GetVertices(sVerts);
-                mesh.GetUVs(0, sUVs);
-                mesh.GetColors(sColors);
-                mesh.GetTriangles(sTris, 0);
-
                 Matrix4x4 m = _container.cachedTransform.worldToLocalMatrix
                             * graphics.gameObject.transform.localToWorldMatrix;
 
                 sLeafScratch.Clear();
-                int skipped;
-                int rebuilt = QuadReassembler.Append(sLeafScratch, sVerts, sUVs, sColors, sTris, m, _drawOffset, range.flags, out skipped);
-                if (rebuilt != range.count || skipped > 0)
-                    return false; //count changed or topology went non-quad: recompile
+                int rebuilt;
+                if (range.sdf)
+                {
+                    //analytic leaf: re-emit from the factory parameters (a factory
+                    //swap or a border toggling on/off changes the count -> recompile)
+                    rebuilt = EmitSdfQuads(graphics, m, sLeafScratch);
+                    if (rebuilt != range.count)
+                        return false;
+                }
+                else
+                {
+                    mesh.GetVertices(sVerts);
+                    mesh.GetUVs(0, sUVs);
+                    mesh.GetColors(sColors);
+                    mesh.GetTriangles(sTris, 0);
+
+                    int skipped;
+                    rebuilt = QuadReassembler.Append(sLeafScratch, sVerts, sUVs, sColors, sTris, m, _drawOffset, range.flags, out skipped);
+                    if (rebuilt != range.count || skipped > 0)
+                        return false; //count changed or topology went non-quad: recompile
+                }
 
                 for (int i = 0; i < rebuilt; i++)
                 {

@@ -76,6 +76,9 @@ Shader "FairyGUI/InstancedUI"
                 float3 rawPos : TEXCOORD2;   //xy = unscrolled pos, z = alphaTex flag
                 float4 clipRect : TEXCOORD3; //per-instance ClipEntry, flat across quad
                 float4 clipSoft : TEXCOORD4;
+                float4 sdfPos : TEXCOORD5;   //xy = quad-local pos px, zw = half size
+                float4 sdfRadii : TEXCOORD6; //corner radii px: BL BR TL TR
+                float2 sdfMW : TEXCOORD7;    //x = border width px, y = mode (0/1 fill/2 border)
                 fixed4 color : COLOR;
             };
 
@@ -107,8 +110,30 @@ Shader "FairyGUI/InstancedUI"
                 o.rawPos = float3(raw, (d.flags & 1u) != 0u ? 1.0 : 0.0);
                 o.clipRect = ce.rect;
                 o.clipSoft = ce.soft;
+                //M7 SDF primitives: mode from flags bits 1-2, border width from
+                //bits 8-15, corner radii from the packed padding bytes
+                o.sdfPos = float4(c * d.rect.zw, d.rect.zw * 0.5);
+                o.sdfRadii = float4(d.padding & 0xFFu, (d.padding >> 8) & 0xFFu,
+                                    (d.padding >> 16) & 0xFFu, (d.padding >> 24) & 0xFFu);
+                float mode = (d.flags & 2u) != 0u ? 1.0 : ((d.flags & 4u) != 0u ? 2.0 : 0.0);
+                o.sdfMW = float2((d.flags >> 8) & 0xFFu, mode);
                 o.color = d.color;
                 return o;
+            }
+
+            //rounded-rect SDF (single-quadrant fold), border band [edge-w, edge],
+            //fill inset by w — mirrors RoundedRectMesh geometry
+            float sdfCoverage(float4 sdfPos, float4 radii, float2 mw)
+            {
+                float2 p = sdfPos.xy - sdfPos.zw;
+                float r = (p.x < 0.0) ? ((p.y < 0.0) ? radii.x : radii.z)
+                                      : ((p.y < 0.0) ? radii.y : radii.w);
+                float2 q = abs(p) - sdfPos.zw + r;
+                float dist = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+                float aa = max(fwidth(dist), 1e-4);
+                return (mw.y > 1.5)
+                    ? saturate(0.5 - dist / aa) * saturate(0.5 + (dist + mw.x) / aa)
+                    : saturate(0.5 - (dist + mw.x) / aa);
             }
 
             //0 at the rect edge -> 1 at softness px inside; 1 everywhere when soft=0
@@ -135,6 +160,8 @@ Shader "FairyGUI/InstancedUI"
                 if (i.rawPos.z > 0.5)
                     tex = fixed4(1, 1, 1, tex.a);
                 fixed4 col = i.color * tex;
+                if (i.sdfMW.y > 0.5)
+                    col.a *= sdfCoverage(i.sdfPos, i.sdfRadii, i.sdfMW);
                 col.a *= softFactor(i.scrolledPos, _ClipRect, _ClipSoft);
                 col.a *= softFactor(i.rawPos.xy, i.clipRect, i.clipSoft);
                 return col;

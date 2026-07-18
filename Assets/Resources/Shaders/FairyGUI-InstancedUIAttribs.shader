@@ -25,7 +25,7 @@ Shader "FairyGUI/InstancedUIAttribs"
             CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag
-            #pragma target 3.0
+            #pragma target 3.5
             #include "UnityCG.cginc"
 
             #define MAX_CLIPS 16
@@ -44,7 +44,8 @@ Shader "FairyGUI/InstancedUIAttribs"
                 float4 rect : TEXCOORD0;   //xy = min corner (container local), zw = size
                 float4 uvA : TEXCOORD1;    //xy = uv at corner (0,0), zw = uv at corner (1,0)
                 float4 uvB : TEXCOORD2;    //xy = uv at corner (0,1), zw = uv at corner (1,1)
-                float4 misc : TEXCOORD3;   //x = transformIndex, y = clipIndex, z = flags
+                float4 misc : TEXCOORD3;   //x = transformIndex, y = clipIndex, z = flags, w = border width px
+                float4 sdfRadii : TEXCOORD4; //corner radii px: BL BR TL TR (M7)
             };
 
             struct v2f
@@ -55,6 +56,9 @@ Shader "FairyGUI/InstancedUIAttribs"
                 float3 rawPos : TEXCOORD2;   //xy = unscrolled pos, z = alphaTex flag
                 float4 clipRect : TEXCOORD3; //per-instance clip entry, flat across quad
                 float4 clipSoft : TEXCOORD4;
+                float4 sdfPos : TEXCOORD5;   //xy = quad-local pos px, zw = half size
+                float4 sdfRadii : TEXCOORD6; //corner radii px: BL BR TL TR
+                float2 sdfMW : TEXCOORD7;    //x = border width px, y = mode (0/1 fill/2 border)
                 fixed4 color : COLOR;
             };
 
@@ -67,7 +71,8 @@ Shader "FairyGUI/InstancedUIAttribs"
                                  lerp(a.uvB.xy, a.uvB.zw, c.x), c.y);
 
                 int clipIndex = (int)(a.misc.y + 0.5);
-                float alphaTex = fmod(a.misc.z, 2.0) >= 1.0 ? 1.0 : 0.0; //flags bit 0
+                int flags = (int)(a.misc.z + 0.5);
+                float alphaTex = (flags & 1) != 0 ? 1.0 : 0.0;
 
                 v2f o;
                 float4 world = mul(unity_ObjectToWorld, float4(local, 0.0, 1.0));
@@ -77,8 +82,27 @@ Shader "FairyGUI/InstancedUIAttribs"
                 o.rawPos = float3(raw, alphaTex);
                 o.clipRect = _ClipRects[clipIndex];
                 o.clipSoft = _ClipSofts[clipIndex];
+                o.sdfPos = float4(c * a.rect.zw, a.rect.zw * 0.5);
+                o.sdfRadii = a.sdfRadii;
+                float mode = (flags & 2) != 0 ? 1.0 : ((flags & 4) != 0 ? 2.0 : 0.0);
+                o.sdfMW = float2(a.misc.w, mode);
                 o.color = a.color;
                 return o;
+            }
+
+            //rounded-rect SDF (single-quadrant fold), border band [edge-w, edge],
+            //fill inset by w — mirrors RoundedRectMesh geometry
+            float sdfCoverage(float4 sdfPos, float4 radii, float2 mw)
+            {
+                float2 p = sdfPos.xy - sdfPos.zw;
+                float r = (p.x < 0.0) ? ((p.y < 0.0) ? radii.x : radii.z)
+                                      : ((p.y < 0.0) ? radii.y : radii.w);
+                float2 q = abs(p) - sdfPos.zw + r;
+                float dist = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+                float aa = max(fwidth(dist), 1e-4);
+                return (mw.y > 1.5)
+                    ? saturate(0.5 - dist / aa) * saturate(0.5 + (dist + mw.x) / aa)
+                    : saturate(0.5 - (dist + mw.x) / aa);
             }
 
             //0 at the rect edge -> 1 at softness px inside; 1 everywhere when soft=0
@@ -105,6 +129,8 @@ Shader "FairyGUI/InstancedUIAttribs"
                 if (i.rawPos.z > 0.5)
                     tex = fixed4(1, 1, 1, tex.a);
                 fixed4 col = i.color * tex;
+                if (i.sdfMW.y > 0.5)
+                    col.a *= sdfCoverage(i.sdfPos, i.sdfRadii, i.sdfMW);
                 col.a *= softFactor(i.scrolledPos, _ClipRect, _ClipSoft);
                 col.a *= softFactor(i.rawPos.xy, i.clipRect, i.clipSoft);
                 return col;

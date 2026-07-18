@@ -13,7 +13,9 @@ namespace FairyGUI
     ///
     /// misc packs the integer instance fields as floats (exact below 2^24):
     /// x = transformIndex, y = clipIndex (indexes _ClipRects/_ClipSofts uniform
-    /// arrays, max 16), z = flags (bit 0 = alpha-only texture), w reserved.
+    /// arrays, max 16), z = flags (bit 0 = alpha-only texture, bits 1-2 = SDF
+    /// mode), w = border width px. sdfRadii carries the padding bytes decoded
+    /// to floats so the GLES shader needs no bit ops.
     /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     internal struct QuadVertex
@@ -24,8 +26,9 @@ namespace FairyGUI
         public Vector4 uvA;
         public Vector4 uvB;
         public Vector4 misc;
+        public Vector4 sdfRadii; //M7: corner radii px (BL BR TL TR), decoded C#-side
 
-        public const int Stride = 88;
+        public const int Stride = 104;
 
         public static readonly VertexAttributeDescriptor[] Layout =
         {
@@ -35,6 +38,7 @@ namespace FairyGUI
             new VertexAttributeDescriptor(VertexAttribute.TexCoord1, VertexAttributeFormat.Float32, 4),
             new VertexAttributeDescriptor(VertexAttribute.TexCoord2, VertexAttributeFormat.Float32, 4),
             new VertexAttributeDescriptor(VertexAttribute.TexCoord3, VertexAttributeFormat.Float32, 4),
+            new VertexAttributeDescriptor(VertexAttribute.TexCoord4, VertexAttributeFormat.Float32, 4),
         };
 
         /// <summary>Writes the four corner vertices of one quad into dst at dstQuad*4.</summary>
@@ -46,7 +50,9 @@ namespace FairyGUI
                 rect = q.rect,
                 uvA = q.uvA,
                 uvB = q.uvB,
-                misc = new Vector4(q.transformIndex, q.clipIndex, q.flags, 0)
+                misc = new Vector4(q.transformIndex, q.clipIndex, q.flags, (q.flags >> 8) & 0xFFu),
+                sdfRadii = new Vector4(q.padding & 0xFFu, (q.padding >> 8) & 0xFFu,
+                    (q.padding >> 16) & 0xFFu, (q.padding >> 24) & 0xFFu)
             };
             int b = dstQuad * 4;
             v.corner = new Vector2(0, 0); dst[b] = v;
