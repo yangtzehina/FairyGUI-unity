@@ -35,6 +35,10 @@ Shader "FairyGUI/InstancedUI"
             #pragma vertex vert
             #pragma fragment frag
             #pragma target 4.5
+            //vertex-stage StructuredBuffer is not portable beyond these: WebGL has
+            //no SSBO at all and GLES3.1 may report 0 vertex SSBO slots — those
+            //platforms use FairyGUI/InstancedUIAttribs (vertex-stream backend)
+            #pragma only_renderers d3d11 metal vulkan
             #include "UnityCG.cginc"
 
             struct QuadInstance

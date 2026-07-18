@@ -44,6 +44,54 @@ namespace FairyGUI
         internal static int liveInPlaceCount;
 
         /// <summary>
+        /// Editor A/B switch: force new streams onto the vertex-stream backend even
+        /// where vertex StructuredBuffers are available (M6 validation ladder 1).
+        /// </summary>
+        public static bool forceVertexPath;
+
+        static int sVertexBufferCaps = -1;
+
+        /// <summary>
+        /// The vertex-stream backend serves platforms without vertex-stage
+        /// StructuredBuffer: WebGL / mini-games (no SSBO at all) and GLES3.x
+        /// devices reporting too few vertex SSBO slots. Decided per stream at
+        /// construction; instance data is baked x4 into each segment's mesh
+        /// vertices (QuadVertex) and internal clips become uniform arrays.
+        /// </summary>
+        public static bool useVertexPath
+        {
+            get
+            {
+                if (forceVertexPath)
+                    return true;
+                if (sVertexBufferCaps < 0)
+                    sVertexBufferCaps = SystemInfo.maxComputeBufferInputsVertex;
+                return sVertexBufferCaps < 2; //the buffer path binds _Instances + _Clips
+            }
+        }
+
+        /// <summary>Max internal clip regions on the vertex path (attribs shader uniform array size).</summary>
+        public const int MaxVertexPathClips = 16;
+
+        //shared local-index pattern (0,1,2)(2,1,3) per quad, grown on demand
+        static int[] sIndexCache;
+
+        static void EnsureIndexCache(int quadCount)
+        {
+            if (sIndexCache != null && sIndexCache.Length >= quadCount * 6)
+                return;
+            int capacity = Mathf.NextPowerOfTwo(quadCount);
+            var tris = new int[capacity * 6];
+            for (int q = 0; q < capacity; q++)
+            {
+                int v = q * 4, t = q * 6;
+                tris[t] = v; tris[t + 1] = v + 1; tris[t + 2] = v + 2;
+                tris[t + 3] = v + 2; tris[t + 4] = v + 1; tris[t + 5] = v + 3;
+            }
+            sIndexCache = tris;
+        }
+
+        /// <summary>
         /// Transform channel: leaf changes queue a tier-2 rewrite on their owning
         /// stream; container changes mark the enclosing stream structure-dirty —
         /// except the stream root itself, whose matrix is read fresh every Render
@@ -116,6 +164,7 @@ namespace FairyGUI
             public GameObject go;
             public MeshFilter filter;
             public MeshRenderer renderer;
+            public Mesh mesh; //vertex path only: per-segment mesh with baked QuadVertex data
             public int lastSortingOrder = int.MinValue;
             public int lastLayer = -1;
         }
@@ -154,9 +203,15 @@ namespace FairyGUI
         //its native renderingOrder separates the runs each frame
         readonly List<NGraphics> _runBarriers = new List<NGraphics>();
         readonly List<GameObject> _segmentPool = new List<GameObject>();
+        readonly List<Mesh> _meshPool = new List<Mesh>();
         readonly List<int> _runOrderScratch = new List<int>();
         Mesh _pullMesh;
         int _pullCapacity;
+        bool _vertexPath;
+        QuadVertex[] _vertexUpload;
+        Vector4[] _clipRectArr;
+        Vector4[] _clipSoftArr;
+        bool _clipOverflowWarned;
         readonly Dictionary<Texture, Material> _materialCache = new Dictionary<Texture, Material>();
 
         Container _container;
@@ -322,7 +377,13 @@ namespace FairyGUI
                 container._instancedStream = this;
                 _structureDirty = true;
             }
-            _shader = Shader.Find("FairyGUI/InstancedUI");
+            _vertexPath = useVertexPath;
+            _shader = Shader.Find(_vertexPath ? "FairyGUI/InstancedUIAttribs" : "FairyGUI/InstancedUI");
+            if (_vertexPath)
+            {
+                _clipRectArr = new Vector4[MaxVertexPathClips];
+                _clipSoftArr = new Vector4[MaxVertexPathClips];
+            }
         }
 
         /// <summary>
@@ -439,21 +500,34 @@ namespace FairyGUI
                 if (_clipBuffer != null)
                     _clipBuffer.Release();
                 _clipBuffer = null;
+                _vertexUpload = null;
                 if (_quads.Count == 0)
                     return;
 
-                _uploadArray = _quads.ToArray();
-                _buffer = new ComputeBuffer(_uploadArray.Length, QuadInstance.Stride, ComputeBufferType.Structured);
-                _buffer.SetData(_uploadArray);
+                if (_vertexPath)
+                {
+                    //vertex-stream backend: instance data baked x4 into per-segment
+                    //mesh vertices; no compute buffers anywhere
+                    _uploadArray = _quads.ToArray();
+                    _vertexUpload = new QuadVertex[_quads.Count * 4];
+                    for (int i = 0; i < _uploadArray.Length; i++)
+                        QuadVertex.WriteQuad(_vertexUpload, i, in _uploadArray[i]);
+                }
+                else
+                {
+                    _uploadArray = _quads.ToArray();
+                    _buffer = new ComputeBuffer(_uploadArray.Length, QuadInstance.Stride, ComputeBufferType.Structured);
+                    _buffer.SetData(_uploadArray);
 
-                _clipUploadArray = _clipEntries.ToArray();
-                _clipBuffer = new ComputeBuffer(_clipUploadArray.Length, ClipEntry.Stride, ComputeBufferType.Structured);
-                _clipBuffer.SetData(_clipUploadArray);
+                    _clipUploadArray = _clipEntries.ToArray();
+                    _clipBuffer = new ComputeBuffer(_clipUploadArray.Length, ClipEntry.Stride, ComputeBufferType.Structured);
+                    _clipBuffer.SetData(_clipUploadArray);
 
-                int maxCount = 0;
-                foreach (var seg in _segments)
-                    if (seg.count > maxCount) maxCount = seg.count;
-                EnsurePullMesh(maxCount);
+                    int maxCount = 0;
+                    foreach (var seg in _segments)
+                        if (seg.count > maxCount) maxCount = seg.count;
+                    EnsurePullMesh(maxCount);
+                }
 
                 foreach (var seg in _segments)
                 {
@@ -468,13 +542,42 @@ namespace FairyGUI
                     seg.material = mat;
                     ClaimSegmentRenderer(seg);
                     seg.props = new MaterialPropertyBlock();
-                    seg.props.SetBuffer("_Instances", _buffer);
-                    seg.props.SetBuffer("_Clips", _clipBuffer);
-                    seg.props.SetInt("_InstanceStart", seg.start);
-                    seg.props.SetInt("_InstanceCount", seg.count);
+                    if (_vertexPath)
+                    {
+                        UploadSegmentMesh(seg);
+                    }
+                    else
+                    {
+                        seg.props.SetBuffer("_Instances", _buffer);
+                        seg.props.SetBuffer("_Clips", _clipBuffer);
+                        seg.props.SetInt("_InstanceStart", seg.start);
+                        seg.props.SetInt("_InstanceCount", seg.count);
+                    }
                     seg.renderer.SetPropertyBlock(seg.props);
                 }
             }
+        }
+
+        const MeshUpdateFlags kNoMeshChecks = MeshUpdateFlags.DontRecalculateBounds
+            | MeshUpdateFlags.DontValidateIndices
+            | MeshUpdateFlags.DontNotifyMeshUsers
+            | MeshUpdateFlags.DontResetBoneBounds;
+
+        /// <summary>
+        /// Vertex path: (re)build one segment's mesh from its slice of the baked
+        /// vertex array. Exact-size buffers — no pull-mesh capacity padding.
+        /// </summary>
+        void UploadSegmentMesh(Segment seg)
+        {
+            Mesh mesh = seg.mesh;
+            mesh.SetVertexBufferParams(seg.count * 4, QuadVertex.Layout);
+            mesh.SetVertexBufferData(_vertexUpload, seg.start * 4, 0, seg.count * 4, 0, kNoMeshChecks);
+            EnsureIndexCache(seg.count);
+            mesh.SetIndexBufferParams(seg.count * 6, IndexFormat.UInt32);
+            mesh.SetIndexBufferData(sIndexCache, 0, 0, seg.count * 6, kNoMeshChecks);
+            mesh.subMeshCount = 1;
+            mesh.SetSubMesh(0, new SubMeshDescriptor(0, seg.count * 6), kNoMeshChecks);
+            mesh.bounds = new Bounds(Vector3.zero, new Vector3(1e6f, 1e6f, 1e6f));
         }
 
         /// <summary>
@@ -538,7 +641,24 @@ namespace FairyGUI
             seg.go = go;
             seg.filter = go.GetComponent<MeshFilter>();
             seg.renderer = go.GetComponent<MeshRenderer>();
-            seg.filter.sharedMesh = _pullMesh;
+            if (_vertexPath)
+            {
+                if (_meshPool.Count > 0)
+                {
+                    seg.mesh = _meshPool[_meshPool.Count - 1];
+                    _meshPool.RemoveAt(_meshPool.Count - 1);
+                }
+                else
+                {
+                    seg.mesh = new Mesh();
+                    seg.mesh.name = "InstancedUISegMesh";
+                    seg.mesh.hideFlags = HideFlags.DontSave;
+                    seg.mesh.MarkDynamic();
+                }
+                seg.filter.sharedMesh = seg.mesh;
+            }
+            else
+                seg.filter.sharedMesh = _pullMesh;
             seg.renderer.sharedMaterial = seg.material;
             seg.lastSortingOrder = int.MinValue;
             seg.lastLayer = -1;
@@ -557,6 +677,11 @@ namespace FairyGUI
         {
             if (seg.go == null)
                 return;
+            if (seg.mesh != null)
+            {
+                _meshPool.Add(seg.mesh);
+                seg.mesh = null;
+            }
             seg.go.SetActive(false);
             seg.go.transform.SetParent(null, false);
             _segmentPool.Add(seg.go);
@@ -638,6 +763,20 @@ namespace FairyGUI
                 if (_clipEntries[i].rect == rect && _clipEntries[i].soft == soft)
                     return (uint)i;
             }
+
+            //vertex path: internal clips live in a fixed uniform array; on overflow
+            //reuse the enclosing region (correct but coarser: the child clips only
+            //by its parent window) and warn once
+            if (_vertexPath && _clipEntries.Count >= MaxVertexPathClips)
+            {
+                if (!_clipOverflowWarned)
+                {
+                    _clipOverflowWarned = true;
+                    Debug.LogWarning($"InstancedUIStream: more than {MaxVertexPathClips - 1} internal clip regions on the vertex-stream backend; extra regions clip by their parent window.");
+                }
+                return parentIndex;
+            }
+
             _clipEntries.Add(new ClipEntry { rect = rect, soft = soft });
             return (uint)(_clipEntries.Count - 1);
         }
@@ -809,7 +948,7 @@ namespace FairyGUI
                         break;
                     }
                 }
-                if (range == null || _buffer == null)
+                if (range == null || (_vertexPath ? _vertexUpload == null : _buffer == null))
                     return false;
 
                 Mesh mesh = graphics.mesh;
@@ -836,8 +975,19 @@ namespace FairyGUI
                     q.clipIndex = range.clipIndex;
                     _quads[range.start + i] = q;
                     _uploadArray[range.start + i] = q;
+                    if (_vertexPath)
+                        QuadVertex.WriteQuad(_vertexUpload, range.start + i, in q);
                 }
-                _buffer.SetData(_uploadArray, range.start, range.start, rebuilt);
+                if (_vertexPath)
+                {
+                    //tier-2 partial path survives the backend switch: range upload
+                    //into the owning segment's vertex buffer
+                    Segment seg = _segments[range.segIndex];
+                    seg.mesh.SetVertexBufferData(_vertexUpload, range.start * 4,
+                        (range.start - seg.start) * 4, rebuilt * 4, 0, kNoMeshChecks);
+                }
+                else
+                    _buffer.SetData(_uploadArray, range.start, range.start, rebuilt);
                 return true;
             }
         }
@@ -865,13 +1015,32 @@ namespace FairyGUI
                     Flush();
                 }
 
-                if (_buffer == null || _segments.Count == 0)
+                if ((_vertexPath ? _vertexUpload == null : _buffer == null) || _segments.Count == 0)
                     return;
 
                 //recomputed every frame: in in-place mode the container itself moves
                 //when its ScrollPane scrolls, while the mask window stays put
                 ComputeExternalWindow();
                 ComputeRunOrders();
+
+                if (_vertexPath)
+                {
+                    //internal clips as uniform arrays (always full-size: Unity pins
+                    //array length at first use per shader)
+                    for (int i = 0; i < MaxVertexPathClips; i++)
+                    {
+                        if (i < _clipEntries.Count)
+                        {
+                            _clipRectArr[i] = _clipEntries[i].rect;
+                            _clipSoftArr[i] = _clipEntries[i].soft;
+                        }
+                        else
+                        {
+                            _clipRectArr[i] = ClipEntry.None.rect;
+                            _clipSoftArr[i] = Vector4.zero;
+                        }
+                    }
+                }
 
                 //layer protocol: follow a claimed leaf's gameObject — painting
                 //captures flip leaves via SetChildrenLayer, and the segments must
@@ -909,6 +1078,11 @@ namespace FairyGUI
                     seg.props.SetVector("_ScrollOffset", _scrollOffset);
                     seg.props.SetVector("_ClipRect", _clipRect);
                     seg.props.SetVector("_ClipSoft", _clipSoft);
+                    if (_vertexPath)
+                    {
+                        seg.props.SetVectorArray("_ClipRects", _clipRectArr);
+                        seg.props.SetVectorArray("_ClipSofts", _clipSoftArr);
+                    }
                     seg.renderer.SetPropertyBlock(seg.props);
                 }
             }
@@ -1018,10 +1192,21 @@ namespace FairyGUI
                 if (seg.go != null)
                     DestroyObject(seg.go);
             }
+            foreach (var seg2 in _segments)
+            {
+                if (seg2.mesh != null)
+                {
+                    DestroyObject(seg2.mesh);
+                    seg2.mesh = null;
+                }
+            }
             _segments.Clear();
             foreach (var go in _segmentPool)
                 DestroyObject(go);
             _segmentPool.Clear();
+            foreach (var m in _meshPool)
+                DestroyObject(m);
+            _meshPool.Clear();
             _leaves.Clear();
             _quads.Clear();
             _runBarriers.Clear();
