@@ -293,6 +293,21 @@ FuiReader 解析组件树与图集 sprite 矩形——**布局结构与图集 UV
 - **打击点是构建期而非稳态**：早期测量的结论是"解析 151ns/节点可忽略、
   构建才是大头"——静态镶边的窗口可以近零网格工作打开（一次数组写 + SetData）。
   稳态收益小（M4 推送协议已经把稳态压到位）。
+- **模拟测试已做（2026-07，邮件项 ×100 = 1100 quads，编辑器 play mode）**：
+  - 构建占比：CreateObject 对象树 **14-18ms（~85%）**，首帧网格构建 ~1.0ms，
+    Extract ~1.3ms。手写模拟发射器（常量表 + 逐项偏移直线代码 + 一次
+    SetData）= **0.03ms**，与运行时提取产出 **1100/1100 quad 多重集全等**。
+  - 推论：仅"跳过网格构建+Extract"（本节原方案，下称 **M8a**）在其切片上
+    是 ~75×，但只覆盖窗口打开成本的 ~12%——**单独做不划算**。
+  - 大头在对象树：探针测得 1500 个 GameObject+MeshFilter+MeshRenderer
+    ≈ 8ms（裸 GameObject 4.6ms），即 CreateObject 的一半是 Unity 对象创建。
+    真正的收益形态是 **M8b 无对象装饰叶**：纯装饰静态叶（不接事件、不被
+    gear/tween 指名）连 GameObject/DisplayObject 都不建，quad 只存在于
+    发射器输出里——生成器在编译期从 .fui 就能证明"哪些叶是安全的"
+    （gear/controller 目标名单是静态的）。M8a 是它的前置（没有网格时
+    quad 必须另有来源），两步合计可望砍掉窗口打开成本的一半以上。
+  - 测量备注：Unity Mono 下 GC.GetAllocatedBytesForCurrentThread 恒零，
+    分配占比需换 ProfilerRecorder 口径另测。
 - **混合粒度**：发射器只接管生成器能证明语义的叶子子集；文本（字体图集
   运行时才定）、装载器、动态列表内容仍走 M1-M5 运行时提取——同一条实例流，
   按叶粒度混合，fallback 语义与 M5 屏障一致。
