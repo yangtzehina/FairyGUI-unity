@@ -264,6 +264,52 @@ mergeability（评审 M10/M14 教训：enabled 也是实例化准入条件且变
 5. **M5 fallback+层协议**：滤镜捕获含实例内容的截图对比。
 6. **M6 移动端 attribute 路径**：GLES 目标真机或模拟器帧捕获。
 
+候选（未排期，依据 GPUI 研究，见 §15）：
+
+7. **M7 SDF primitive 化（借鉴 GPUI）**：QuadInstance 扩展圆角半径/描边宽度
+   （`padding` 4B + flags 高位是现成扩展点；若需独立描边色再扩到 96B），
+   fragment 用有向距离场判圆角矩形（对称性折到单象限）、描边（|sdf| 带宽）、
+   阴影（Evan Wallace 解析高斯 erf，零纹理）。收益：圆角/描边 Shape 从
+   fallback 名单移除（现在是多边形三角化 → 非 quad → 原生渲染），阴影不再
+   需要九宫格贴图。验收：圆角/描边/阴影三明治场景 0.000% 像素对比 +
+   lastSkippedPairs 计数下降。单 shader 静态分支，不做变体生成（变体断批，
+   与 v4 目标相反）。
+8. **M8 SG 静态烘焙（编译期 quad 发射器）**：见 §15。
+
+## 15. 编译期生成的边界（Source Generator 能与不能）
+
+已有设施：MVVM 管线的 FuiViewGenerator 通过 csc.rsp additionalfile 读 .fui，
+FuiReader 解析组件树与图集 sprite 矩形——**布局结构与图集 UV 在编译期已知**。
+
+### 能：per-组件 quad 发射器（M8 候选）
+
+对静态内容（Image/Shape/九宫格/装饰帧），.fui 完全决定 quad 流：位置尺寸是
+(width, height) 的仿射函数（relations/九宫格展开都是），图集 UV 是常量。SG 可
+生成直线代码 `EmitQuads(ref QuadWriter w, float width, float height, int page)`
+直接写 QuadInstance——跳过整条运行时链：NGraphics 网格构建（GameObject/Mesh
+分配）、mesh 读回（GetVertices 等）、三角形对重组、邻接排序（生成器用同一
+合法性规则在编译期排好）、切段（按纹理预分段）。
+
+- **打击点是构建期而非稳态**：早期测量的结论是"解析 151ns/节点可忽略、
+  构建才是大头"——静态镶边的窗口可以近零网格工作打开（一次数组写 + SetData）。
+  稳态收益小（M4 推送协议已经把稳态压到位）。
+- **混合粒度**：发射器只接管生成器能证明语义的叶子子集；文本（字体图集
+  运行时才定）、装载器、动态列表内容仍走 M1-M5 运行时提取——同一条实例流，
+  按叶粒度混合，fallback 语义与 M5 屏障一致。
+- **风险要直说**：这是在生成器里复刻 FairyGUI 布局语义（relations/pivot/
+  旋转/group/gear）——和评审揭示的"CPU 副本失效"同类的双实现漂移风险，
+  只是漂移发生在**编译期**，可被既有 0.000% 像素对比设施在 CI 里逐组件
+  抓住（生成器同时嵌入 .fui 内容哈希做过期检测）。命中测试不受影响
+  （从不走 renderer，§10）。
+
+### 不能/不必：生成 shader
+
+- Roslyn SG 只能产 C#；Unity shader 走 ShaderLab/SRP 导入管线，代码生成
+  shader 得做编辑器资产管线，是另一件工具（且没有需求支撑）。
+- 单 shader + flags 静态分支已覆盖 primitive 集（M7 的 SDF 也是加字段不加
+  变体）；平台差异走 multi_compile（M6）。per-组件生成 shader 变体 = 变体
+  切换断批，恰是 v4 要消灭的东西。
+
 ## 14. 风险
 
 - 段 z 步进与既有内容 z 交互（fallback renderer 穿插精度）——M1 即验证；
