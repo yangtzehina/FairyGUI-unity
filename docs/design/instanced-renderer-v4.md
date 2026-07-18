@@ -348,6 +348,16 @@ mergeability（评审 M10/M14 教训：enabled 也是实例化准入条件且变
    小字号 CJK 无 hinting 的解析 AA 质量需真实中文 A/B；移动端 fragment
    成本需 M6 口径实测。策略：混合——大字/飘字/世界文本先走曲线，正文
    保留图集，同流共存逐实例切换。与 M8 无依赖，可并行。
+   **M9a 执行结果（2026-07-18，PoC 层）**：C# 直读 TTF glyf 表二次贝塞尔
+   轮廓（cmap format4/loca/hmtx，复合字形暂跳过，CFF 不支持——CJK 用
+   Arial Unicode 这类 TrueType）；每字形 8 横 band 加速；fragment 用
+   Lengyel 符号分类表（0x2E74）求环绕数——首版用导数判向出现射线过
+   端点的水平条纹伪影，换表后消除——AA 用 6 采样+2 步牛顿的近似最近
+   距离转像素。130px/46px 中英文渲染干净（含 CJK 镂空 winding），14px
+   在 0.55 缩放视口（实际 ~7.7 设备像素）勉强可读。**M9b 待做**：接入
+   实例流（flags bit3 + padding=glyphIndex + 曲线/band buffer 随段绑定）、
+   TextField 生产管线、顶点流后端的数据纹理形态、正文字号 CJK 与图集
+   A/B、移动端 fragment 成本按 M6 口径实测、Slug 精确 band 区间 AA。
 
 ## 15. 编译期生成的边界（Source Generator 能与不能）
 
