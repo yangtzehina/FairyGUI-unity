@@ -291,6 +291,11 @@ mergeability（评审 M10/M14 教训：enabled 也是实例化准入条件且变
    目标下这就是真目标而非替代；3) 三相基准在顶点流后端回归（scroll
    仍 uniform 级、UpdateLeaf 局部上传仍 µs 级）；4) Android 模拟器
    （SwiftShader 软件 GLES）；5) 真机帧捕获金标准，最后一次性确认。
+   **项目约束（2026-07 确认）：Android 目标为 Vulkan** → 安卓走 buffer
+   路径（与桌面同 shader，顶点 SSBO 是 Vulkan 核心能力），顶点流后端
+   实际服务对象 = WebGL/小游戏（+可选 GLES 兜底包）。阶梯裁剪：第 4 级
+   GLES 模拟器仅在决定出 GLES 兜底包时执行；第 5 级真机冒烟按 Vulkan
+   帧捕获做（验 buffer 路径而非顶点流）。
 
 候选（未排期，依据 GPUI 研究，见 §15）：
 
