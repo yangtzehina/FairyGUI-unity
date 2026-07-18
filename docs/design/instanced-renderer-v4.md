@@ -275,6 +275,16 @@ mergeability（评审 M10/M14 教训：enabled 也是实例化准入条件且变
    lastSkippedPairs 计数下降。单 shader 静态分支，不做变体生成（变体断批，
    与 v4 目标相反）。
 8. **M8 SG 静态烘焙（编译期 quad 发射器）**：见 §15。
+9. **M9 曲线文本 primitive（Slug 公版，2026-03-17 专利入公有领域后才可行）**：
+   字形 = QuadInstance 包围盒 + `padding` 放 glyphIndex + flags 加一位，fragment
+   从曲线/band StructuredBuffer 解析求覆盖（参考 HLSL 已 Apache/MIT 开源，
+   github.com/EricLengyel/Slug；MIT 全管线实现见 Slughorn，含 COLR 彩色
+   emoji）。收益：任意缩放/旋转下文本无限清晰；**整条字体图集失效链消失**
+   （textRebuildFlag 双遍、图集重建纹理监听、CJK 图集内存），字体变编译期
+   烘焙资产，与 M8 同向，文本叶从 M8 的运行时保留区解放。风险（一票项）：
+   小字号 CJK 无 hinting 的解析 AA 质量需真实中文 A/B；移动端 fragment
+   成本需 M6 口径实测。策略：混合——大字/飘字/世界文本先走曲线，正文
+   保留图集，同流共存逐实例切换。与 M8 无依赖，可并行。
 
 ## 15. 编译期生成的边界（Source Generator 能与不能）
 
