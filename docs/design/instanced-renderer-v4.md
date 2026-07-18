@@ -274,7 +274,16 @@ mergeability（评审 M10/M14 教训：enabled 也是实例化准入条件且变
    需要九宫格贴图。验收：圆角/描边/阴影三明治场景 0.000% 像素对比 +
    lastSkippedPairs 计数下降。单 shader 静态分支，不做变体生成（变体断批，
    与 v4 目标相反）。
-8. **M8 SG 静态烘焙（编译期 quad 发射器）**：见 §15。
+8. **M8 SG 静态烘焙（编译期 quad 发射器）**：见 §15。**已降为拉动式立项**
+   （不进主动排期；触发条件 = 真实项目 profiling 出现静态重窗口打开卡顿）。
+   降级依据（2026-07 复盘）：a) Phase A 模拟建的是 100 个真实项，但真实
+   列表是虚拟列表——物理槽位 ~10 个，构建本来就只有 ~1.5ms，虚拟化早已
+   解决列表构建；b) 数据驱动内容（GLoader 动态图标/文本/controller 状态）
+   在发射器覆盖外或需按状态参数化，逐回收重发射与既有 tier-2 路径功能
+   重叠；c) M8b 无对象化与 controller/gear 目标冲突，按 pageIndex 分支
+   发射的簿记会长成运行时流的复刻。甜点区收窄为**静态镶边重、不虚拟化
+   的窗口**（主城/结算/HUD 框架）。且 M9 落地后文本保留区消失，届时
+   做 M8 覆盖率更高——顺序上有利。
 9. **M9 曲线文本 primitive（Slug 公版，2026-03-17 专利入公有领域后才可行）**：
    字形 = QuadInstance 包围盒 + `padding` 放 glyphIndex + flags 加一位，fragment
    从曲线/band StructuredBuffer 解析求覆盖（参考 HLSL 已 Apache/MIT 开源，
