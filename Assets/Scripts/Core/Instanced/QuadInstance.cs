@@ -39,6 +39,11 @@ namespace FairyGUI
         public const uint FlagSdfFill = 1u << 1;
         public const uint FlagSdfBorder = 1u << 2;
 
+        //M9b curve-text glyph: padding = glyphIndex into CurveFontStore, and the
+        //corner-UV channel carries the glyph-space (em) mapping instead of texture
+        //coordinates — the interpolated uv IS the outline-space position.
+        public const uint FlagCurveGlyph = 1u << 3;
+
         public static uint PackRadii(float bottomLeft, float bottomRight, float topLeft, float topRight)
         {
             uint bl = (uint)Mathf.Clamp(Mathf.RoundToInt(bottomLeft), 0, 255);

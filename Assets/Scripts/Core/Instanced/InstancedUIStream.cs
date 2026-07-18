@@ -177,7 +177,8 @@ namespace FairyGUI
             public int segIndex;
             public uint flags;
             public uint clipIndex;
-            public bool sdf; //M7: tier-2 updates re-emit analytically, not from mesh
+            public bool sdf;   //M7: tier-2 updates re-emit analytically, not from mesh
+            public bool curve; //M9b: same, from the CurveTextMesh layout
         }
 
         struct PendingLeaf
@@ -190,6 +191,7 @@ namespace FairyGUI
             public int stageCount;
             public bool instanceable; //false: non-quad topology -> native fallback
             public bool sdf;          //M7: quads carry analytic SDF coverage
+            public bool curve;        //M9b: quads are curve-text glyphs
         }
 
         readonly List<Segment> _segments = new List<Segment>();
@@ -828,6 +830,24 @@ namespace FairyGUI
             //overlap, exactly the legality rule native FairyBatching uses
             var p = new PendingLeaf { graphics = graphics, texture = tex, flags = flags, clipIndex = clipIndex, stageStart = _staging.Count };
 
+            //M9b: curve-text leaves emit one analytic glyph quad per character
+            int curveCount = EmitCurveQuads(graphics, m, _staging);
+            if (curveCount > 0)
+            {
+                p.stageCount = curveCount;
+                p.instanceable = true;
+                p.curve = true;
+                StampClipIndex(_staging, p.stageStart, p.stageCount, clipIndex);
+                _entries.Add(new AdjacencyEntry
+                {
+                    key = tex,
+                    x0 = bmin.x, y0 = bmin.y, x1 = bmax.x, y1 = bmax.y,
+                    payload = _pending.Count
+                });
+                _pending.Add(p);
+                return;
+            }
+
             //M7: rounded/stroked rect and circle shapes bypass their triangulated
             //mesh entirely — analytic SDF coverage from 1-2 quads
             int sdfCount = EmitSdfQuads(graphics, m, _staging);
@@ -960,6 +980,45 @@ namespace FairyGUI
             return 1;
         }
 
+        /// <summary>
+        /// M9b: CurveTextMesh leaves emit one quad per glyph; coverage comes from
+        /// the quadratic outlines in CurveFontStore. The corner-UV channel carries
+        /// the glyph-space mapping, padding carries the glyph index. Vertex-stream
+        /// backend and rotated leaves keep the native ghost fallback for now.
+        /// </summary>
+        int EmitCurveQuads(NGraphics graphics, Matrix4x4 m, List<QuadInstance> dst)
+        {
+            if (_vertexPath || !(graphics.meshFactory is CurveTextMesh ctm) || ctm.glyphQuads.Count == 0)
+                return 0;
+            if (Mathf.Abs(m.m01) > 1e-4f || Mathf.Abs(m.m10) > 1e-4f)
+                return 0;
+
+            Color col = ctm.color;
+            col.a *= graphics._currentAlpha;
+            int n = 0;
+            foreach (var gq in ctm.glyphQuads)
+            {
+                Vector2 pa = m.MultiplyPoint3x4(new Vector3(gq.rect.xMin, -gq.rect.yMax, 0));
+                Vector2 pb = m.MultiplyPoint3x4(new Vector3(gq.rect.xMax, -gq.rect.yMin, 0));
+                Vector2 mn = Vector2.Min(pa, pb) + _drawOffset;
+                Vector2 sz = Vector2.Max(pa, pb) - Vector2.Min(pa, pb);
+                Vector4 bb = gq.bbox;
+                dst.Add(new QuadInstance
+                {
+                    rect = new Vector4(mn.x, mn.y, sz.x, sz.y),
+                    //quad corner (0,0) sits at the SMALLEST unity y = glyph bottom
+                    //(em bbox min y), so the interpolated uv is the em position
+                    uvA = new Vector4(bb.x, bb.y, bb.z, bb.y),
+                    uvB = new Vector4(bb.x, bb.w, bb.z, bb.w),
+                    color = col,
+                    flags = QuadInstance.FlagCurveGlyph,
+                    padding = (uint)gq.glyphIndex
+                });
+                n++;
+            }
+            return n;
+        }
+
         void BuildSegments()
         {
             Segment seg = null;
@@ -996,7 +1055,8 @@ namespace FairyGUI
                     segIndex = _segments.Count - 1,
                     flags = leaf.flags,
                     clipIndex = leaf.clipIndex,
-                    sdf = leaf.sdf
+                    sdf = leaf.sdf,
+                    curve = leaf.curve
                 };
                 for (int q = 0; q < leaf.stageCount; q++)
                     _quads.Add(_staging[leaf.stageStart + q]);
@@ -1066,6 +1126,12 @@ namespace FairyGUI
                     //analytic leaf: re-emit from the factory parameters (a factory
                     //swap or a border toggling on/off changes the count -> recompile)
                     rebuilt = EmitSdfQuads(graphics, m, sLeafScratch);
+                    if (rebuilt != range.count)
+                        return false;
+                }
+                else if (range.curve)
+                {
+                    rebuilt = EmitCurveQuads(graphics, m, sLeafScratch);
                     if (rebuilt != range.count)
                         return false;
                 }
@@ -1196,6 +1262,8 @@ namespace FairyGUI
                         seg.props.SetVectorArray("_ClipRects", _clipRectArr);
                         seg.props.SetVectorArray("_ClipSofts", _clipSoftArr);
                     }
+                    else if (CurveFontStore.loaded)
+                        CurveFontStore.Bind(seg.props); //rebind every frame: buffers may rebuild on new chars
                     seg.renderer.SetPropertyBlock(seg.props);
                 }
             }

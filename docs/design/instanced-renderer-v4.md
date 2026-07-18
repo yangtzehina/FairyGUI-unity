@@ -358,6 +358,18 @@ mergeability（评审 M10/M14 教训：enabled 也是实例化准入条件且变
    实例流（flags bit3 + padding=glyphIndex + 曲线/band buffer 随段绑定）、
    TextField 生产管线、顶点流后端的数据纹理形态、正文字号 CJK 与图集
    A/B、移动端 fragment 成本按 M6 口径实测、Slug 精确 band 区间 AA。
+   **M9b 执行结果（2026-07-18，流集成）**：CurveFontStore（按需烘焙字形、
+   全局共享 buffer、版本化重建，段每帧重绑）+ CurveTextMesh 生产者
+   （TTF 度量自排版；原生 fallback 画半透明幽灵框占位）+ 流侧
+   FlagCurveGlyph（bit3）——**corner-UV 通道复用为 em 空间映射**（插值
+   即字形坐标，零新增字段），padding=glyphIndex，band 基址=glyphIndex×8。
+   验证 5/5：就地认领、同数文字流转走 tier-2、增长重编译、Dispose 恢复；
+   全量回归绿（17/10/19/17）。A/B 截图：×4 缩放下曲线锐利 vs 图集明显
+   发虚（核心价值证实）；16/24px 正文两者可读、曲线略细（无 hinting）。
+   **M9c 待做**：顶点流后端数据纹理形态（当前曲线叶在该后端走幽灵
+   fallback）、全分辨率正文 CJK A/B（一票项终裁）、TextField/BaseFont
+   真管线接入（现为 CurveTextMesh 独立生产者）、复合字形与 CFF、移动端
+   成本实测、精确 band 区间 AA。
 
 ## 15. 编译期生成的边界（Source Generator 能与不能）
 

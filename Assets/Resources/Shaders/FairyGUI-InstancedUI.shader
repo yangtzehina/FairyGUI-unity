@@ -61,6 +61,12 @@ Shader "FairyGUI/InstancedUI"
 
             StructuredBuffer<QuadInstance> _Instances;
             StructuredBuffer<ClipEntry> _Clips;
+            //M9b curve text (CurveFontStore): quadratic outline points, per-glyph
+            //band lists (base = glyphIndex*8) and per-glyph em bounding boxes
+            StructuredBuffer<float2> _CurvePts;
+            StructuredBuffer<uint2> _CurveBands;
+            StructuredBuffer<uint> _CurveBandIdx;
+            StructuredBuffer<float4> _CurveGlyphs;
             uint _InstanceStart;
             uint _InstanceCount;
             float4 _ScrollOffset;  //xy applied to every quad
@@ -115,8 +121,10 @@ Shader "FairyGUI/InstancedUI"
                 o.sdfPos = float4(c * d.rect.zw, d.rect.zw * 0.5);
                 o.sdfRadii = float4(d.padding & 0xFFu, (d.padding >> 8) & 0xFFu,
                                     (d.padding >> 16) & 0xFFu, (d.padding >> 24) & 0xFFu);
-                float mode = (d.flags & 2u) != 0u ? 1.0 : ((d.flags & 4u) != 0u ? 2.0 : 0.0);
-                o.sdfMW = float2((d.flags >> 8) & 0xFFu, mode);
+                float mode = (d.flags & 2u) != 0u ? 1.0 : ((d.flags & 4u) != 0u ? 2.0
+                    : ((d.flags & 8u) != 0u ? 3.0 : 0.0));
+                //mode 3 (curve glyph): x carries the glyph index instead of a width
+                o.sdfMW = float2(mode == 3.0 ? d.padding : ((d.flags >> 8) & 0xFFu), mode);
                 o.color = d.color;
                 return o;
             }
@@ -134,6 +142,81 @@ Shader "FairyGUI/InstancedUI"
                 return (mw.y > 1.5)
                     ? saturate(0.5 - dist / aa) * saturate(0.5 + (dist + mw.x) / aa)
                     : saturate(0.5 - (dist + mw.x) / aa);
+            }
+
+            float2 evalQ(float2 a, float2 b, float2 cpt, float t)
+            {
+                float it = 1.0 - t;
+                return it * it * a + 2.0 * it * t * b + t * t * cpt;
+            }
+
+            //M9b: analytic glyph coverage from quadratic outlines — winding by
+            //Lengyel's sign-class table (0x2E74), AA from sampled nearest distance
+            float curveCoverage(float2 gp, uint glyphIndex)
+            {
+                float4 bbox = _CurveGlyphs[glyphIndex];
+                float bh = max(bbox.w - bbox.y, 1.0);
+                int band = clamp((int)((gp.y - bbox.y) / bh * 8.0), 0, 7);
+                uint2 bc = _CurveBands[glyphIndex * 8 + (uint)band];
+
+                int winding = 0;
+                float best = 1e12;
+                for (uint k = 0; k < bc.y; k++)
+                {
+                    uint ci = _CurveBandIdx[bc.x + k];
+                    float2 A = _CurvePts[ci * 3 + 0] - gp;
+                    float2 B = _CurvePts[ci * 3 + 1] - gp;
+                    float2 C = _CurvePts[ci * 3 + 2] - gp;
+
+                    uint code = (0x2E74u >> (((A.y > 0.0) ? 2u : 0u)
+                        + ((B.y > 0.0) ? 4u : 0u) + ((C.y > 0.0) ? 8u : 0u))) & 3u;
+                    if (code != 0u)
+                    {
+                        float ay = A.y - 2.0 * B.y + C.y;
+                        float by = A.y - B.y;
+                        float cy = A.y;
+                        float t1, t2;
+                        if (abs(ay) > 1e-6)
+                        {
+                            float dsc = sqrt(max(by * by - ay * cy, 0.0));
+                            t1 = (by - dsc) / ay;
+                            t2 = (by + dsc) / ay;
+                        }
+                        else
+                            t1 = t2 = cy / (2.0 * by);
+                        if ((code & 1u) != 0u && evalQ(A, B, C, t1).x > 0.0)
+                            winding += 1;
+                        if (code > 1u && evalQ(A, B, C, t2).x > 0.0)
+                            winding -= 1;
+                    }
+
+                    float bt = 0.0;
+                    float bd = dot(A, A);
+                    [unroll]
+                    for (int sIdx = 1; sIdx <= 6; sIdx++)
+                    {
+                        float t = sIdx / 6.0;
+                        float2 q = evalQ(A, B, C, t);
+                        float dd = dot(q, q);
+                        if (dd < bd) { bd = dd; bt = t; }
+                    }
+                    [unroll]
+                    for (int it2 = 0; it2 < 2; it2++)
+                    {
+                        float2 q = evalQ(A, B, C, bt);
+                        float2 dq = 2.0 * ((B - A) + (A - 2.0 * B + C) * bt);
+                        float denom = dot(dq, dq);
+                        if (denom > 1e-9)
+                            bt = clamp(bt - dot(q, dq) / denom, 0.0, 1.0);
+                    }
+                    float2 qf = evalQ(A, B, C, bt);
+                    best = min(best, dot(qf, qf));
+                }
+
+                float dist = sqrt(best);
+                float emPerPx = max(length(float2(ddx(gp.x), ddy(gp.x))), 1e-6);
+                float signedPx = (winding != 0 ? dist : -dist) / emPerPx;
+                return saturate(0.5 + signedPx);
             }
 
             //0 at the rect edge -> 1 at softness px inside; 1 everywhere when soft=0
@@ -160,7 +243,9 @@ Shader "FairyGUI/InstancedUI"
                 if (i.rawPos.z > 0.5)
                     tex = fixed4(1, 1, 1, tex.a);
                 fixed4 col = i.color * tex;
-                if (i.sdfMW.y > 0.5)
+                if (i.sdfMW.y > 2.5)
+                    col.a *= curveCoverage(i.uv, (uint)(i.sdfMW.x + 0.5)); //uv = em-space pos
+                else if (i.sdfMW.y > 0.5)
                     col.a *= sdfCoverage(i.sdfPos, i.sdfRadii, i.sdfMW);
                 col.a *= softFactor(i.scrolledPos, _ClipRect, _ClipSoft);
                 col.a *= softFactor(i.rawPos.xy, i.clipRect, i.clipSoft);
