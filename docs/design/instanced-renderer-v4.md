@@ -296,6 +296,19 @@ mergeability（评审 M10/M14 教训：enabled 也是实例化准入条件且变
    实际服务对象 = WebGL/小游戏（+可选 GLES 兜底包）。阶梯裁剪：第 4 级
    GLES 模拟器仅在决定出 GLES 兜底包时执行；第 5 级真机冒烟按 Vulkan
    帧捕获做（验 buffer 路径而非顶点流）。
+   **执行结果（2026-07-18，阶梯 1-3 完成）**：
+   - 阶梯 1（编辑器 forceVertexPath，Metal）：重组器 17/17、裁剪 10/10、
+     场景 19/19、多列表段数持平、就地接管 0.000%/0.000%、三明治+滤镜
+     捕获 0.000%/0.000%——两后端语义全等；buffer 路径复跑 19/19 无回归。
+   - 阶梯 3（三相基准 A/B）：scroll 84ns=84ns（uniform 级保住）、
+     UpdateLeaf 顶点流 10.25µs vs buffer 11.17µs（区间 SetVertexBufferData
+     略胜）、Render 同步 7.5µs vs 5.5µs（SetVectorArray 代价）、draw 全等。
+   - 阶梯 2（WebGL 构建进浏览器，dev 未压缩 49MB/构建 83s）：
+     `device=OpenGLES3 vertexCaps=0 useVertexPath=True` 自动选路正确；
+     构建内自校验接管构成与编辑器全等（5 段/315 quad/0 跳过）；原生 vs
+     实例像素差 0.506%（静态与滚动完全相同的 2916 像素，worst=100；
+     同一对 shader 在 Metal 下为 0.000% → 判为 GLES 光栅化/精度边缘噪声
+     而非逻辑差异）；console 零错误。
 
 候选（未排期，依据 GPUI 研究，见 §15）：
 
