@@ -262,7 +262,22 @@ mergeability（评审 M10/M14 教训：enabled 也是实例化准入条件且变
 4. **M4 推送脏协议**：DisplayObject 三通道 + 叶侧状态自恢复；用评审的 7 个
    失败场景做回归清单（隐藏/重父级/滤镜/关开关/跨根/变不可合并/子图集移动）。
 5. **M5 fallback+层协议**：滤镜捕获含实例内容的截图对比。
-6. **M6 移动端 attribute 路径**：GLES 目标真机或模拟器帧捕获。
+6. **M6 实例数据通道（WebGL 优先，2026-07 重新定界）**：顶点阶段
+   StructuredBuffer 的平台矩阵是 DX11/Metal/Vulkan 稳、Android GLES3.1
+   不保证（`GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS` 允许为 0）、WebGL2/微信
+   小游戏**完全没有**——所以备用通道按 WebGL 优先做：**VTF 顶点纹理拉取**
+   （QuadInstance 打进 RGBAFloat 纹理，256 quad/行 ×5 texel，`texelFetch`
+   寻址；ClipEntry 独立 2×N 纹理；uint 字段以 float 存取，<2^24 精确）。
+   texelFetch 与 gl_VertexID 都是 GLES3.0 核心特性，无扩展依赖。双 shader
+   （buffer 版 only_renderers d3d/metal/vulkan；texture 版全平台），C# 按
+   `SystemInfo.maxComputeBufferInputsVertex` 选路，另留 `forceTextureChannel`
+   供编辑器 A/B。已知成本：texture 通道的 tier-2 局部更新退化为整纹理
+   Apply（v1 接受，后续可分行上传）。
+   **验证阶梯**（前四级不碰真机）：1) 编辑器 Metal 下强制 texture 通道，
+   与 buffer 通道像素 0 差异（沿用 0.000% 设施）；2) malioc 静态过 Mali
+   核心；3) **WebGL 构建本机浏览器跑**——GLES3.0 语义全保真 + 截图对比，
+   小游戏目标下这就是真目标而非替代；4) Android 模拟器（SwiftShader 软件
+   GLES）；5) 真机帧捕获金标准，最后一次性确认。
 
 候选（未排期，依据 GPUI 研究，见 §15）：
 
