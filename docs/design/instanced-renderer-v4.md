@@ -236,10 +236,14 @@ mergeability（评审 M10/M14 教训：enabled 也是实例化准入条件且变
 
 | 平台 | 实例数据通道 | 备注 |
 |---|---|---|
-| macOS/Win/iOS(Metal)/Vulkan | StructuredBuffer（PoC 路径） | 首选 |
-| GLES 3.0/3.1 低端 | per-instance vertex attributes（两个 stream：静态 corner + 实例流） | ProGPU 浏览器路径同款取舍 |
-| Built-in RP | RenderMeshPrimitives（PoC 已验证） | 首版 |
+| macOS/Win/iOS(Metal)/Vulkan | StructuredBuffer + SV_VertexID 拉取（M5 形态） | 首选 |
+| **WebGL（M6 首攻目标）** | **顶点流后端**：QuadVertex = 实例 88B×4 角烘进段 Mesh 顶点流（SetVertexBufferParams 自定义布局），SetVertexBufferData 支持叶粒度局部上传（2 级路径保留）；ClipBuffer 改 uniform 数组（`_ClipRects[16]`，实测每流 3-4 条，16 封顶）；shader target 3.0，零 SSBO/零 SV_VertexID 依赖 | WebGL2 无 SSBO（supportsComputeShaders=false）；后端按 SystemInfo 自动选，`forceVertexPath` 供编辑器回归 |
+| GLES 3.0/3.1 低端 | 同 WebGL 顶点流后端（一套代码） | ProGPU 浏览器路径同款取舍 |
+| Built-in RP | 段 = MeshRenderer 显示子节点（M5），平台中立 | sortingOrder/翻层协议不随后端变 |
 | URP | 同 API 可用；材质换 URP unlit 模板 | 适配点已知 |
+
+顶点流后端的代价（记录）：实例数据 ×4 复制（88B/顶点 vs 80B/实例，1100 quad
+≈ 387KB，可接受）；段间共享大 buffer 改为每段独立 Mesh（段数 2-6，无碍）。
 
 注意（PoC 实测坑）：编辑器后台 GameView 不重绘时，RenderMeshPrimitives 需与
 手动 `cam.Render()` 同帧才被消费——验证脚本已固化此手法。
@@ -262,22 +266,31 @@ mergeability（评审 M10/M14 教训：enabled 也是实例化准入条件且变
 4. **M4 推送脏协议**：DisplayObject 三通道 + 叶侧状态自恢复；用评审的 7 个
    失败场景做回归清单（隐藏/重父级/滤镜/关开关/跨根/变不可合并/子图集移动）。
 5. **M5 fallback+层协议**：滤镜捕获含实例内容的截图对比。
-6. **M6 实例数据通道（WebGL 优先，2026-07 重新定界）**：顶点阶段
-   StructuredBuffer 的平台矩阵是 DX11/Metal/Vulkan 稳、Android GLES3.1
-   不保证（`GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS` 允许为 0）、WebGL2/微信
-   小游戏**完全没有**——所以备用通道按 WebGL 优先做：**VTF 顶点纹理拉取**
-   （QuadInstance 打进 RGBAFloat 纹理，256 quad/行 ×5 texel，`texelFetch`
-   寻址；ClipEntry 独立 2×N 纹理；uint 字段以 float 存取，<2^24 精确）。
-   texelFetch 与 gl_VertexID 都是 GLES3.0 核心特性，无扩展依赖。双 shader
-   （buffer 版 only_renderers d3d/metal/vulkan；texture 版全平台），C# 按
-   `SystemInfo.maxComputeBufferInputsVertex` 选路，另留 `forceTextureChannel`
-   供编辑器 A/B。已知成本：texture 通道的 tier-2 局部更新退化为整纹理
-   Apply（v1 接受，后续可分行上传）。
-   **验证阶梯**（前四级不碰真机）：1) 编辑器 Metal 下强制 texture 通道，
-   与 buffer 通道像素 0 差异（沿用 0.000% 设施）；2) malioc 静态过 Mali
-   核心；3) **WebGL 构建本机浏览器跑**——GLES3.0 语义全保真 + 截图对比，
-   小游戏目标下这就是真目标而非替代；4) Android 模拟器（SwiftShader 软件
-   GLES）；5) 真机帧捕获金标准，最后一次性确认。
+6. **M6 顶点流后端（WebGL 优先，2026-07 定案）**：顶点阶段 StructuredBuffer
+   的平台矩阵是 DX11/Metal/Vulkan 稳、Android GLES3.1 不保证
+   （`GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS` 允许为 0）、WebGL2/微信小游戏
+   **完全没有**——备用通道按 WebGL 优先做**顶点流**（§11 WebGL 行）：
+   QuadVertex（corner + 实例数据 ×4 角烘复制，88B/顶点）写进每段独立
+   Mesh（SetVertexBufferParams 自定义布局，属性顺序按 Unity 枚举序：
+   Position/Color/TexCoord0-3）；tier-2 局部更新 = `SetVertexBufferData`
+   区间上传，**11µs 级局部路径完整保留**；ClipBuffer 改 uniform 数组
+   `_ClipRects[16]/_ClipSofts[16]`（实测每流 3-4 条，16 封顶，超限告警
+   并复用父窗）；attribs shader target 3.0，零 SSBO/零 SV_VertexID 依赖
+   （corner 是顶点属性）。双 shader：buffer 版加 only_renderers
+   d3d11/metal/vulkan（避免 WebGL 构建期编译失败），attribs 版全平台；
+   C# 按 `SystemInfo.supportsComputeShaders` 选路，`forceVertexPath`
+   供编辑器回归。顺带收益：段 Mesh 精确尺寸，消灭 M5 拉取网格容量
+   padding 的死顶点开销（恰好是低端 GPU 受众的痛点）。
+   **已否决备选（留档）**：VTF 顶点纹理拉取（texelFetch + gl_VertexID，
+   数据不 ×4、共享大纹理）——否决理由：tier-2 局部更新退化为整纹理
+   Apply，牺牲招牌能力换 300KB 级内存，方向反了；且保留死顶点问题。
+   **验证阶梯**（前三级不碰真机）：1) 编辑器强制顶点流后端跑全量既有
+   回归（重组器 17/裁剪 10/场景 19/多列表/就地像素一致）——与 buffer
+   后端语义等价；2) **WebGL 构建本机浏览器跑**——构建内就地接管自校验
+   （像素对比 + 页面判定文本），浏览器截图 + console 无错误；小游戏
+   目标下这就是真目标而非替代；3) 三相基准在顶点流后端回归（scroll
+   仍 uniform 级、UpdateLeaf 局部上传仍 µs 级）；4) Android 模拟器
+   （SwiftShader 软件 GLES）；5) 真机帧捕获金标准，最后一次性确认。
 
 候选（未排期，依据 GPUI 研究，见 §15）：
 
