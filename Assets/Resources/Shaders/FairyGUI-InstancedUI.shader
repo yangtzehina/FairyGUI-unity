@@ -1,5 +1,11 @@
-// v4 instanced UI quad shader: expands a shared unit quad per instance from the
-// QuadInstance stream (must match Core/Instanced/QuadInstance.cs, 80 bytes).
+// v4 instanced UI quad shader, vertex-pulling form: each segment is a real
+// MeshRenderer (child of the stream container) whose mesh is capacity-many
+// dummy quads; SV_VertexID selects the QuadInstance (must match
+// Core/Instanced/QuadInstance.cs, 80 bytes) and the corner, quads beyond
+// _InstanceCount collapse to degenerate triangles. Being a renderer gives the
+// segment sortingOrder (interleaving with native fallback content) and layer
+// membership (CaptureCamera filter captures) for free; the object-to-world
+// matrix comes from the transform, so moving/scrolling the container is free.
 // Segments share one buffer and address it via _InstanceStart. Corner UVs are
 // stored explicitly (rotation-proof); flags bit 0 selects alpha-only sampling
 // (dynamic font atlas).
@@ -52,11 +58,10 @@ Shader "FairyGUI/InstancedUI"
             StructuredBuffer<QuadInstance> _Instances;
             StructuredBuffer<ClipEntry> _Clips;
             uint _InstanceStart;
-            float4x4 _ContainerL2W;
+            uint _InstanceCount;
             float4 _ScrollOffset;  //xy applied to every quad
             float4 _ClipRect;      //external window: xMin yMin xMax yMax
             float4 _ClipSoft;      //external window softness px toward min/max edges
-            float _SegZ;           //per-segment depth for transparent draw ordering
             sampler2D _MainTex;
 
             struct v2f
@@ -70,10 +75,18 @@ Shader "FairyGUI/InstancedUI"
                 fixed4 color : COLOR;
             };
 
-            v2f vert(float4 vertex : POSITION, uint iid : SV_InstanceID)
+            v2f vert(uint vid : SV_VertexID)
             {
-                QuadInstance d = _Instances[iid + _InstanceStart];
-                float2 c = vertex.xy; //unit quad corner in 0..1
+                uint quad = vid >> 2;
+                if (quad >= _InstanceCount)
+                {
+                    //beyond this segment's range: collapse to a degenerate triangle
+                    v2f dead = (v2f)0;
+                    return dead;
+                }
+                QuadInstance d = _Instances[quad + _InstanceStart];
+                //vertex k of each quad: corner (k&1, k>>1) in 0..1
+                float2 c = float2(vid & 1u, (vid >> 1) & 1u);
 
                 float2 raw = d.rect.xy + d.rect.zw * c;
                 float2 local = raw + _ScrollOffset.xy;
@@ -83,8 +96,7 @@ Shader "FairyGUI/InstancedUI"
                 ClipEntry ce = _Clips[d.clipIndex];
 
                 v2f o;
-                float4 world = mul(_ContainerL2W, float4(local, 0.0, 1.0));
-                world.z += _SegZ;
+                float4 world = mul(unity_ObjectToWorld, float4(local, 0.0, 1.0));
                 o.pos = mul(UNITY_MATRIX_VP, world);
                 o.uv = uv;
                 o.scrolledPos = local;

@@ -762,6 +762,12 @@ namespace FairyGUI
         /// <param name="value"></param>
         public void SetChildrenLayer(int value)
         {
+            //instanced segments are plain GameObject children, invisible to the
+            //DisplayObject walk — flip them along (CaptureCamera.Capture flips to
+            //the capture layer, renders and flips back synchronously, so a
+            //per-frame follow can never catch it; review M12)
+            if (_instancedStream != null)
+                _instancedStream._SetSegmentLayers(value);
             int cnt = _children.Count;
             for (int i = 0; i < cnt; i++)
             {

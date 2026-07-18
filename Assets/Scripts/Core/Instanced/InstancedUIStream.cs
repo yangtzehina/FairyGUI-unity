@@ -12,25 +12,30 @@ namespace FairyGUI
     /// v4 core stream: extracts a container's visible leaves into GPU-resident quad
     /// instances (QuadReassembler), adjacency-sorts them FairyBatching-style so leaves
     /// sharing a texture become contiguous where draw order may legally change (M2),
-    /// segments the result on texture change (segments z-stepped so transparent
-    /// sorting preserves submission order), and draws each segment with one instanced
-    /// call from a shared unit quad.
+    /// and segments the result on texture change.
     ///
-    /// Update tiers (design §4.2): whole-stream movement is the container matrix
-    /// (free); scrolling is SetScrollOffset (one uniform); a single leaf's content
-    /// change is UpdateLeaf (partial instance-buffer upload); structure changes are
-    /// Extract (full recompile). Dirty channels are driven by the caller in M1;
-    /// the push protocol arrives in M4.
+    /// Submission (M5): each segment is a real MeshRenderer child of the container,
+    /// vertex-pulling quads from the shared instance buffer by SV_VertexID. Real
+    /// renderers give the stream sortingOrder interleaving with NATIVE fallback
+    /// content (non-quad topology, stencil-mask/painting scopes keep their own
+    /// renderers): fallback leaves act as immovable sort barriers splitting the
+    /// stream into runs; a run's segments share the free sortingOrder slot of a
+    /// claimed leaf below the barrier's own order, and a per-segment transform z
+    /// step orders segments within a run. SetChildrenLayer carries the segment
+    /// renderers along, so CaptureCamera filter/painting captures of scopes
+    /// CONTAINING the stream include instanced content (review M12).
+    ///
+    /// Update tiers (design §4.2): whole-stream movement/scrolling is the container
+    /// transform (free — segments are its children); a single leaf's content change
+    /// is UpdateLeaf (partial instance-buffer upload); structure changes are Extract
+    /// (full recompile), driven by the M4 push channels in in-place mode.
     ///
     /// Clipping (M3): the external window (the container's or its mask parent's
     /// clipRect) is a uniform tested against the scrolled position; internal nested
     /// rect clips are folded by intersection into ClipBuffer entries referenced per
     /// instance, so one segment can span many clip regions — draw count does not
-    /// grow with clip region count. Both support FairyGUI clipSoftness. Stencil-
-    /// masked subtrees are skipped and counted (fallback scope arrives in M5).
-    ///
-    /// Current limits: no fallback interleaving markers (M5). Elements whose
-    /// triangle pairs are not quads are skipped and reported via lastSkippedPairs.
+    /// grow with clip region count. Both support FairyGUI clipSoftness (literal
+    /// pixel fade; native's screen-relative scale renders sub-pixel).
     /// </summary>
     public class InstancedUIStream : IDisposable
     {
@@ -101,8 +106,18 @@ namespace FairyGUI
             public float z;
             public int start;
             public int count;
+            public int runIndex;      //fallback barriers delimit runs (M5)
             public Material material;
             public MaterialPropertyBlock props;
+            //the segment IS a renderer: a plain child GameObject of the container
+            //whose MeshRenderer pulls quads from the instance buffer by SV_VertexID.
+            //Being a real renderer gives it sortingOrder (interleaving with native
+            //fallback leaves) and CaptureCamera compatibility for free.
+            public GameObject go;
+            public MeshFilter filter;
+            public MeshRenderer renderer;
+            public int lastSortingOrder = int.MinValue;
+            public int lastLayer = -1;
         }
 
         class LeafRange
@@ -110,6 +125,7 @@ namespace FairyGUI
             public NGraphics graphics;
             public int start;
             public int count;
+            public int segIndex;
             public uint flags;
             public uint clipIndex;
         }
@@ -117,10 +133,12 @@ namespace FairyGUI
         struct PendingLeaf
         {
             public NGraphics graphics;
-            public Matrix4x4 matrix;
             public Texture texture;
             public uint flags;
             public uint clipIndex;
+            public int stageStart;    //quads pre-built into _staging at walk time
+            public int stageCount;
+            public bool instanceable; //false: non-quad topology -> native fallback
         }
 
         readonly List<Segment> _segments = new List<Segment>();
@@ -131,6 +149,14 @@ namespace FairyGUI
         //(offset added at upload); entry 0 is the "no clip" sentinel
         readonly List<ClipEntry> _clipEntries = new List<ClipEntry>();
         readonly List<QuadInstance> _quads = new List<QuadInstance>();
+        readonly List<QuadInstance> _staging = new List<QuadInstance>();
+        //graphics of the fallback leaf that CLOSES run r (null for the last run);
+        //its native renderingOrder separates the runs each frame
+        readonly List<NGraphics> _runBarriers = new List<NGraphics>();
+        readonly List<GameObject> _segmentPool = new List<GameObject>();
+        readonly List<int> _runOrderScratch = new List<int>();
+        Mesh _pullMesh;
+        int _pullCapacity;
         readonly Dictionary<Texture, Material> _materialCache = new Dictionary<Texture, Material>();
 
         Container _container;
@@ -143,7 +169,6 @@ namespace FairyGUI
         HashSet<NGraphics> _claimScratch = new HashSet<NGraphics>();
         readonly HashSet<NTexture> _watchedTextures = new HashSet<NTexture>();
         Action<NTexture> _onWatchedTexture;
-        Mesh _quadMesh;
         Shader _shader;
         ComputeBuffer _buffer;
         ComputeBuffer _clipBuffer;
@@ -171,6 +196,12 @@ namespace FairyGUI
 
         public int segmentCount { get { return _segments.Count; } }
         public int quadCount { get { return _quads.Count; } }
+
+        /// <summary>
+        /// Submission runs delimited by fallback barriers (segments of one run share
+        /// a sortingOrder slot; native fallback renderers draw between runs).
+        /// </summary>
+        public int runCount { get { return _runBarriers.Count + 1; } }
 
         /// <summary>
         /// Internal clip regions found by the last Extract, including the entry-0
@@ -292,15 +323,6 @@ namespace FairyGUI
                 _structureDirty = true;
             }
             _shader = Shader.Find("FairyGUI/InstancedUI");
-
-            _quadMesh = new Mesh();
-            _quadMesh.vertices = new[]
-            {
-                new Vector3(0, 0, 0), new Vector3(1, 0, 0),
-                new Vector3(0, 1, 0), new Vector3(1, 1, 0)
-            };
-            _quadMesh.triangles = new[] { 0, 1, 2, 2, 1, 3 };
-            _quadMesh.UploadMeshData(false);
         }
 
         /// <summary>
@@ -362,11 +384,15 @@ namespace FairyGUI
             using (sExtract.Auto())
 #endif
             {
+                foreach (var seg in _segments)
+                    ReleaseSegmentRenderer(seg);
                 _segments.Clear();
                 _leaves.Clear();
                 _quads.Clear();
+                _staging.Clear();
                 _pending.Clear();
                 _entries.Clear();
+                _runBarriers.Clear();
                 _clipEntries.Clear();
                 _clipEntries.Add(ClipEntry.None);
                 _skippedPairs = 0;
@@ -381,8 +407,7 @@ namespace FairyGUI
 
                 if (_sortAdjacency)
                     AdjacencySorter.Sort(_entries);
-                for (int i = 0; i < _entries.Count; i++)
-                    AppendLeaf(_pending[_entries[i].payload]);
+                BuildSegments();
 
                 if (_inPlace)
                 {
@@ -425,6 +450,11 @@ namespace FairyGUI
                 _clipBuffer = new ComputeBuffer(_clipUploadArray.Length, ClipEntry.Stride, ComputeBufferType.Structured);
                 _clipBuffer.SetData(_clipUploadArray);
 
+                int maxCount = 0;
+                foreach (var seg in _segments)
+                    if (seg.count > maxCount) maxCount = seg.count;
+                EnsurePullMesh(maxCount);
+
                 foreach (var seg in _segments)
                 {
                     Material mat;
@@ -436,12 +466,103 @@ namespace FairyGUI
                         _materialCache.Add(seg.texture, mat);
                     }
                     seg.material = mat;
+                    ClaimSegmentRenderer(seg);
                     seg.props = new MaterialPropertyBlock();
                     seg.props.SetBuffer("_Instances", _buffer);
                     seg.props.SetBuffer("_Clips", _clipBuffer);
                     seg.props.SetInt("_InstanceStart", seg.start);
+                    seg.props.SetInt("_InstanceCount", seg.count);
+                    seg.renderer.SetPropertyBlock(seg.props);
                 }
             }
+        }
+
+        /// <summary>
+        /// The shared pull mesh: capacity quads of dummy vertices whose only job is
+        /// providing SV_VertexID topology (4 verts / 6 indices per quad); positions
+        /// come from the instance buffer in the vertex shader. Quads beyond a
+        /// segment's _InstanceCount collapse to degenerate triangles.
+        /// </summary>
+        void EnsurePullMesh(int quadCount)
+        {
+            if (_pullMesh != null && _pullCapacity >= quadCount)
+                return;
+            int capacity = Mathf.Max(_pullCapacity != 0 ? _pullCapacity : 512, 1);
+            while (capacity < quadCount)
+                capacity *= 2;
+
+            if (_pullMesh == null)
+            {
+                _pullMesh = new Mesh();
+                _pullMesh.name = "InstancedUIPull";
+                _pullMesh.hideFlags = HideFlags.DontSave;
+            }
+            _pullMesh.Clear();
+            _pullMesh.indexFormat = capacity * 4 > 65535
+                ? UnityEngine.Rendering.IndexFormat.UInt32
+                : UnityEngine.Rendering.IndexFormat.UInt16;
+            var verts = new Vector3[capacity * 4];
+            var tris = new int[capacity * 6];
+            for (int q = 0; q < capacity; q++)
+            {
+                int v = q * 4, t = q * 6;
+                tris[t] = v; tris[t + 1] = v + 1; tris[t + 2] = v + 2;
+                tris[t + 3] = v + 2; tris[t + 4] = v + 1; tris[t + 5] = v + 3;
+            }
+            _pullMesh.vertices = verts;
+            _pullMesh.triangles = tris;
+            _pullMesh.bounds = new Bounds(Vector3.zero, new Vector3(1e6f, 1e6f, 1e6f));
+            _pullMesh.UploadMeshData(false);
+            _pullCapacity = capacity;
+        }
+
+        void ClaimSegmentRenderer(Segment seg)
+        {
+            GameObject go;
+            if (_segmentPool.Count > 0)
+            {
+                go = _segmentPool[_segmentPool.Count - 1];
+                _segmentPool.RemoveAt(_segmentPool.Count - 1);
+            }
+            else
+            {
+                go = new GameObject("InstancedUISegment");
+                go.hideFlags = DisplayObject.hideFlags;
+                var mf = go.AddComponent<MeshFilter>();
+                var mr = go.AddComponent<MeshRenderer>();
+                mr.shadowCastingMode = ShadowCastingMode.Off;
+                mr.receiveShadows = false;
+                mr.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.Off;
+                mr.lightProbeUsage = UnityEngine.Rendering.LightProbeUsage.Off;
+            }
+            seg.go = go;
+            seg.filter = go.GetComponent<MeshFilter>();
+            seg.renderer = go.GetComponent<MeshRenderer>();
+            seg.filter.sharedMesh = _pullMesh;
+            seg.renderer.sharedMaterial = seg.material;
+            seg.lastSortingOrder = int.MinValue;
+            seg.lastLayer = -1;
+            var t = go.transform;
+            t.SetParent(_container.cachedTransform, false);
+            //the z step lives on the TRANSFORM: same-sortingOrder renderers are
+            //depth-sorted by their transform position, which shader-side offsets
+            //cannot influence — and the shader picks it up via unity_ObjectToWorld
+            t.localPosition = new Vector3(0, 0, seg.z);
+            t.localRotation = Quaternion.identity;
+            t.localScale = Vector3.one;
+            go.SetActive(true);
+        }
+
+        void ReleaseSegmentRenderer(Segment seg)
+        {
+            if (seg.go == null)
+                return;
+            seg.go.SetActive(false);
+            seg.go.transform.SetParent(null, false);
+            _segmentPool.Add(seg.go);
+            seg.go = null;
+            seg.filter = null;
+            seg.renderer = null;
         }
 
         void ExtractContainer(Container container, Matrix4x4 worldToLocal, uint clipIndex)
@@ -560,67 +681,99 @@ namespace FairyGUI
                 bmax = Vector2.Min(bmax, new Vector2(cr.z, cr.w));
             }
 
-            _entries.Add(new AdjacencyEntry
-            {
-                key = tex,
-                x0 = bmin.x, y0 = bmin.y, x1 = bmax.x, y1 = bmax.y,
-                payload = _pending.Count
-            });
-            _pending.Add(new PendingLeaf { graphics = graphics, matrix = m, texture = tex, flags = flags, clipIndex = clipIndex });
-        }
-
-        void AppendLeaf(PendingLeaf leaf)
-        {
-            //segment on texture change in (sorted) submission order
-            bool segCreated = false;
-            Segment seg = _segments.Count > 0 ? _segments[_segments.Count - 1] : null;
-            if (seg == null || seg.texture != leaf.texture)
-            {
-                seg = new Segment
-                {
-                    texture = leaf.texture,
-                    z = -0.5f * _segments.Count,
-                    start = _quads.Count
-                };
-                _segments.Add(seg);
-                segCreated = true;
-            }
-
-            Mesh mesh = leaf.graphics.mesh;
+            //stage the quads NOW (mesh is hot); non-quad topology becomes a
+            //fallback barrier: it keeps its native renderer, and a null sort key
+            //makes it immovable — others may still sort past it when they do not
+            //overlap, exactly the legality rule native FairyBatching uses
+            var p = new PendingLeaf { graphics = graphics, texture = tex, flags = flags, clipIndex = clipIndex, stageStart = _staging.Count };
             mesh.GetVertices(sVerts);
             mesh.GetUVs(0, sUVs);
             mesh.GetColors(sColors);
             mesh.GetTriangles(sTris, 0);
-
-            var range = new LeafRange { graphics = leaf.graphics, start = _quads.Count, flags = leaf.flags, clipIndex = leaf.clipIndex };
             int skipped;
-            range.count = QuadReassembler.Append(_quads, sVerts, sUVs, sColors, sTris, leaf.matrix, _drawOffset, leaf.flags, out skipped);
+            p.stageCount = QuadReassembler.Append(_staging, sVerts, sUVs, sColors, sTris, m, _drawOffset, flags, out skipped);
             if (skipped > 0)
             {
-                //non-quad topology: all-or-nothing — roll the leaf back so its
-                //native renderer keeps drawing it whole (fallback path)
                 _skippedPairs += skipped;
-                _quads.RemoveRange(range.start, range.count);
-                if (segCreated && _quads.Count == seg.start)
-                    _segments.RemoveAt(_segments.Count - 1);
-                else
-                    seg.count = _quads.Count - seg.start;
-                return;
+                _staging.RemoveRange(p.stageStart, p.stageCount);
+                p.stageCount = 0;
+                p.instanceable = false;
             }
-            StampClipIndex(range.start, range.count, leaf.clipIndex);
-            seg.count = _quads.Count - seg.start;
-            _leaves.Add(range);
+            else
+            {
+                p.instanceable = true;
+                StampClipIndex(_staging, p.stageStart, p.stageCount, clipIndex);
+            }
+
+            _entries.Add(new AdjacencyEntry
+            {
+                key = p.instanceable ? tex : null,
+                x0 = bmin.x, y0 = bmin.y, x1 = bmax.x, y1 = bmax.y,
+                payload = _pending.Count
+            });
+            _pending.Add(p);
         }
 
-        void StampClipIndex(int start, int count, uint clipIndex)
+        /// <summary>
+        /// Consumes the sorted entry list: instanceable leaves append their staged
+        /// quads into the final stream (segmenting on texture change), fallback
+        /// barriers close the current segment and delimit a RUN — segments of one
+        /// run share a sortingOrder slot below the barrier's own order, so native
+        /// fallback renderers interleave correctly between runs.
+        /// </summary>
+        void BuildSegments()
+        {
+            Segment seg = null;
+            int runIndex = 0;
+            for (int i = 0; i < _entries.Count; i++)
+            {
+                PendingLeaf leaf = _pending[_entries[i].payload];
+                if (!leaf.instanceable)
+                {
+                    //_runBarriers[r] closes run r; the final run has no closer
+                    _runBarriers.Add(leaf.graphics);
+                    runIndex++;
+                    seg = null;
+                    continue;
+                }
+
+                if (seg == null || seg.texture != leaf.texture)
+                {
+                    seg = new Segment
+                    {
+                        texture = leaf.texture,
+                        z = -0.5f * _segments.Count,
+                        start = _quads.Count,
+                        runIndex = runIndex
+                    };
+                    _segments.Add(seg);
+                }
+
+                var range = new LeafRange
+                {
+                    graphics = leaf.graphics,
+                    start = _quads.Count,
+                    count = leaf.stageCount,
+                    segIndex = _segments.Count - 1,
+                    flags = leaf.flags,
+                    clipIndex = leaf.clipIndex
+                };
+                for (int q = 0; q < leaf.stageCount; q++)
+                    _quads.Add(_staging[leaf.stageStart + q]);
+                seg.count = _quads.Count - seg.start;
+                _leaves.Add(range);
+            }
+        }
+
+        static void StampClipIndex(List<QuadInstance> quads, int start, int count, uint clipIndex)
         {
             if (clipIndex == 0)
                 return;
             for (int i = start; i < start + count; i++)
             {
-                QuadInstance q = _quads[i];
+                QuadInstance q = quads[i];
                 q.clipIndex = clipIndex;
-                _quads[i] = q;
+                quads[i] = q;
             }
         }
 
@@ -690,8 +843,11 @@ namespace FairyGUI
         }
 
         /// <summary>
-        /// Submission tier: one instanced draw per segment. Call once per frame after
-        /// the stage update.
+        /// Submission tier: per-frame sync of the segment renderers. The segments
+        /// are real MeshRenderers (children of the container), so the camera draws
+        /// them like any other UI renderer; this call keeps their sortingOrder,
+        /// layer and shared uniforms in step. Call once per frame AFTER the stage
+        /// update (native renderingOrder must be assigned first).
         /// </summary>
         public void Render()
         {
@@ -702,42 +858,121 @@ namespace FairyGUI
                 if (_inPlace)
                 {
                     if (_container.isDisposed || !_container.visible || !_container.gameObject.activeInHierarchy)
+                    {
+                        SetSegmentsVisible(false);
                         return;
+                    }
                     Flush();
                 }
 
-                if (_buffer == null)
+                if (_buffer == null || _segments.Count == 0)
                     return;
 
                 //recomputed every frame: in in-place mode the container itself moves
                 //when its ScrollPane scrolls, while the mask window stays put
                 ComputeExternalWindow();
+                ComputeRunOrders();
 
-                Matrix4x4 l2w = _container.cachedTransform.localToWorldMatrix;
+                //layer protocol: follow a claimed leaf's gameObject — painting
+                //captures flip leaves via SetChildrenLayer, and the segments must
+                //flip with them so CaptureCamera sees them and the main camera
+                //does not (review M12)
                 int layer = _container.gameObject.layer;
+                if (_leaves.Count > 0 && _leaves[0].graphics.gameObject != null)
+                    layer = _leaves[0].graphics.gameObject.layer;
 
                 for (int i = 0; i < _segments.Count; i++)
                 {
                     Segment seg = _segments[i];
-                    if (seg.count == 0)
+                    if (seg.renderer == null || seg.count == 0)
                         continue;
 
-                    seg.props.SetMatrix("_ContainerL2W", l2w);
+                    if (!seg.go.activeSelf)
+                        seg.go.SetActive(true);
+
+                    //interleaving: all segments of a run share the sortingOrder slot
+                    //just below their closing barrier; within a run the z step keeps
+                    //segment order (Unity breaks sortingOrder ties by depth)
+                    int order = _runOrderScratch[seg.runIndex];
+                    if (order != seg.lastSortingOrder)
+                    {
+                        seg.renderer.sortingOrder = order;
+                        seg.lastSortingOrder = order;
+                    }
+
+                    if (layer != seg.lastLayer)
+                    {
+                        seg.go.layer = layer;
+                        seg.lastLayer = layer;
+                    }
+
                     seg.props.SetVector("_ScrollOffset", _scrollOffset);
                     seg.props.SetVector("_ClipRect", _clipRect);
                     seg.props.SetVector("_ClipSoft", _clipSoft);
-                    seg.props.SetFloat("_SegZ", seg.z);
+                    seg.renderer.SetPropertyBlock(seg.props);
+                }
+            }
+        }
 
-                    var bounds = new Bounds(new Vector3(0, 0, seg.z), new Vector3(100000, 100000, 1));
-                    var rp = new RenderParams(seg.material)
-                    {
-                        matProps = seg.props,
-                        worldBounds = bounds,
-                        layer = layer,
-                        receiveShadows = false,
-                        shadowCastingMode = ShadowCastingMode.Off
-                    };
-                    Graphics.RenderMeshPrimitives(rp, _quadMesh, 0, seg.count);
+        /// <summary>
+        /// Layer-flip protocol: SetChildrenLayer carries the segment renderers along
+        /// with the DisplayObject children (CaptureCamera's synchronous
+        /// flip-render-flip must include them for filter/painting captures).
+        /// </summary>
+        internal void _SetSegmentLayers(int layer)
+        {
+            for (int i = 0; i < _segments.Count; i++)
+            {
+                Segment seg = _segments[i];
+                if (seg.go != null)
+                {
+                    seg.go.layer = layer;
+                    seg.lastLayer = layer;
+                }
+            }
+        }
+
+        void SetSegmentsVisible(bool visible)
+        {
+            for (int i = 0; i < _segments.Count; i++)
+            {
+                Segment seg = _segments[i];
+                if (seg.go != null && seg.go.activeSelf != visible)
+                    seg.go.SetActive(visible);
+            }
+        }
+
+        /// <summary>
+        /// Per-run sortingOrder: the highest claimed-leaf renderingOrder in the run
+        /// that is still below the closing barrier's order. Claimed leaves consume
+        /// order slots in the native assignment pass anyway, so the slot is free;
+        /// overlapping content cannot have been sorted across a barrier, which makes
+        /// this order correct wherever it is visually observable.
+        /// </summary>
+        void ComputeRunOrders()
+        {
+            int runCount = _runBarriers.Count + 1;
+            _runOrderScratch.Clear();
+            for (int r = 0; r < runCount; r++)
+                _runOrderScratch.Add(int.MinValue);
+
+            for (int i = 0; i < _leaves.Count; i++)
+            {
+                LeafRange leaf = _leaves[i];
+                int r = _segments[leaf.segIndex].runIndex;
+                int barrierOrder = r < _runBarriers.Count ? _runBarriers[r].renderingOrder : int.MaxValue;
+                int o = leaf.graphics.renderingOrder;
+                if (o < barrierOrder && o > _runOrderScratch[r])
+                    _runOrderScratch[r] = o;
+            }
+
+            for (int r = 0; r < runCount; r++)
+            {
+                if (_runOrderScratch[r] == int.MinValue)
+                {
+                    //run has no usable slot (nothing in it overlaps its barrier):
+                    //sit just above the previous barrier
+                    _runOrderScratch[r] = r > 0 ? _runBarriers[r - 1].renderingOrder + 1 : 0;
                 }
             }
         }
@@ -778,17 +1013,32 @@ namespace FairyGUI
                     UnityEngine.Object.DestroyImmediate(kv.Value);
             }
             _materialCache.Clear();
+            foreach (var seg in _segments)
+            {
+                if (seg.go != null)
+                    DestroyObject(seg.go);
+            }
             _segments.Clear();
+            foreach (var go in _segmentPool)
+                DestroyObject(go);
+            _segmentPool.Clear();
             _leaves.Clear();
             _quads.Clear();
-            if (_quadMesh != null)
+            _runBarriers.Clear();
+            if (_pullMesh != null)
             {
-                if (Application.isPlaying)
-                    UnityEngine.Object.Destroy(_quadMesh);
-                else
-                    UnityEngine.Object.DestroyImmediate(_quadMesh);
-                _quadMesh = null;
+                DestroyObject(_pullMesh);
+                _pullMesh = null;
+                _pullCapacity = 0;
             }
+        }
+
+        static void DestroyObject(UnityEngine.Object o)
+        {
+            if (Application.isPlaying)
+                UnityEngine.Object.Destroy(o);
+            else
+                UnityEngine.Object.DestroyImmediate(o);
         }
     }
 }
