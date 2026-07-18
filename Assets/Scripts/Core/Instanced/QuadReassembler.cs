@@ -30,6 +30,10 @@ namespace FairyGUI
         {
             int appended = 0;
             skippedPairs = 0;
+            //a triangle count that is not a multiple of 6 cannot be all quads
+            //(e.g. a triangle fan's odd tail) — count it so callers fall back
+            if (triangles.Count % 6 != 0)
+                skippedPairs++;
             bool hasColors = colors != null && colors.Count >= vertices.Count;
 
             for (int t = 0; t + 5 < triangles.Count; t += 6)
@@ -77,25 +81,44 @@ namespace FairyGUI
                     continue;
                 }
 
-                //assign each source vertex's UV to the unit-quad corner its position
-                //lands on, so rotated atlas sprites keep correct sampling
+                //assign each source vertex's UV to the bounds corner its position
+                //sits on (rotated atlas sprites keep correct sampling) — and REQUIRE
+                //that the four points each cover a distinct corner: triangle-fan
+                //pairs (arbitrary polygons) share the 4-distinct-vertex signature of
+                //real quads but their points do not form an axis-aligned rectangle,
+                //and non-axis-aligned (arbitrarily rotated) quads cannot be encoded
+                //as an instance rect either; both must fall back to the native path
+                float epsX = size.x * 0.001f + 0.001f;
+                float epsY = size.y * 0.001f + 0.001f;
                 Vector2 uv00 = default, uv10 = default, uv01 = default, uv11 = default;
-                float midX = min.x + size.x * 0.5f;
-                float midY = min.y + size.y * 0.5f;
+                int cornerMask = 0;
                 for (int k = 0; k < 4; k++)
                 {
                     Vector2 p = k == 0 ? p0 : k == 1 ? p1 : k == 2 ? p2 : p3;
+                    bool xMin = p.x - min.x <= epsX, xMax = max.x - p.x <= epsX;
+                    bool yMin = p.y - min.y <= epsY, yMax = max.y - p.y <= epsY;
+                    if (!(xMin || xMax) || !(yMin || yMax))
+                    {
+                        cornerMask = -1;
+                        break;
+                    }
+                    int corner = (xMax ? 1 : 0) | (yMax ? 2 : 0);
+                    if ((cornerMask & (1 << corner)) != 0)
+                    {
+                        cornerMask = -1;
+                        break;
+                    }
+                    cornerMask |= 1 << corner;
                     Vector2 uv = uvs[sIndices[k]];
-                    if (p.x <= midX)
-                    {
-                        if (p.y <= midY) uv00 = uv;
-                        else uv01 = uv;
-                    }
-                    else
-                    {
-                        if (p.y <= midY) uv10 = uv;
-                        else uv11 = uv;
-                    }
+                    if (corner == 0) uv00 = uv;
+                    else if (corner == 1) uv10 = uv;
+                    else if (corner == 2) uv01 = uv;
+                    else uv11 = uv;
+                }
+                if (cornerMask != 15)
+                {
+                    skippedPairs++;
+                    continue;
                 }
 
                 output.Add(new QuadInstance

@@ -52,6 +52,8 @@ namespace FairyGUI
 
         List<DisplayObject> _children;
         DisplayObject _mask;
+        //the instanced stream rooted at this container (in-place mode), if any
+        internal InstancedUIStream _instancedStream;
         Rect? _clipRect;
         List<BatchElement> _batchElements;
         MergedBatch _mergedBatch;
@@ -735,6 +737,7 @@ namespace FairyGUI
         /// <param name="childrenChanged"></param>
         public void InvalidateBatchingState(bool childrenChanged)
         {
+            InstancedUIStream._NotifyStructure(this);
             if (childrenChanged && (_flags & Flags.BatchingRoot) != 0)
                 _flags |= Flags.BatchingRequested;
             else

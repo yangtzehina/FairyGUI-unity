@@ -34,6 +34,67 @@ namespace FairyGUI
     /// </summary>
     public class InstancedUIStream : IDisposable
     {
+        //fast guard so the DisplayObject-level push hooks cost one static int
+        //compare when no in-place stream exists
+        internal static int liveInPlaceCount;
+
+        /// <summary>
+        /// Transform channel: leaf changes queue a tier-2 rewrite on their owning
+        /// stream; container changes mark the enclosing stream structure-dirty —
+        /// except the stream root itself, whose matrix is read fresh every Render
+        /// (tier 0), which is what makes in-place ScrollPane scrolling free.
+        /// </summary>
+        internal static void _NotifyTransform(DisplayObject obj)
+        {
+            if (liveInPlaceCount == 0)
+                return;
+
+            NGraphics g = obj.graphics;
+            if (g != null)
+            {
+                if (g._instancedBy != null)
+                    g._instancedBy._QueueLeafUpdate(g);
+                if (g.subInstances != null)
+                {
+                    foreach (var sub in g.subInstances)
+                        if (sub._instancedBy != null)
+                            sub._instancedBy._QueueLeafUpdate(sub);
+                }
+            }
+
+            if (obj is Container c)
+            {
+                if (c._instancedStream != null)
+                    return; //stream root: tier 0, nothing to do
+                for (Container p = c.parent; p != null; p = p.parent)
+                {
+                    if (p._instancedStream != null)
+                    {
+                        p._instancedStream._structureDirty = true;
+                        return;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Structure channel: walk up from the object (inclusive) to the enclosing
+        /// stream root and mark it for recompile.
+        /// </summary>
+        internal static void _NotifyStructure(DisplayObject obj)
+        {
+            if (liveInPlaceCount == 0)
+                return;
+            for (DisplayObject p = obj; p != null; p = p.parent)
+            {
+                if (p is Container c && c._instancedStream != null)
+                {
+                    c._instancedStream._structureDirty = true;
+                    return;
+                }
+            }
+        }
+
         class Segment
         {
             public Texture texture;
@@ -74,6 +135,14 @@ namespace FairyGUI
 
         Container _container;
         bool _sortAdjacency;
+        bool _inPlace;
+        bool _structureDirty;
+        readonly List<NGraphics> _dirtyLeaves = new List<NGraphics>();
+        readonly HashSet<NGraphics> _dirtyLeafSet = new HashSet<NGraphics>();
+        HashSet<NGraphics> _claimed = new HashSet<NGraphics>();
+        HashSet<NGraphics> _claimScratch = new HashSet<NGraphics>();
+        readonly HashSet<NTexture> _watchedTextures = new HashSet<NTexture>();
+        Action<NTexture> _onWatchedTexture;
         Mesh _quadMesh;
         Shader _shader;
         ComputeBuffer _buffer;
@@ -136,16 +205,92 @@ namespace FairyGUI
             return _clipEntries[index];
         }
 
+        /// <summary>Validation probe: whether a leaf is currently claimed (in-place).</summary>
+        public bool IsClaimed(NGraphics graphics)
+        {
+            return _claimed.Contains(graphics);
+        }
+
+        /// <summary>Structure channel consumer: recompile on the next Flush/Render.</summary>
+        internal void _MarkStructureDirty()
+        {
+            _structureDirty = true;
+        }
+
+        /// <summary>Content/transform channel consumer: tier-2 rewrite on next Flush.</summary>
+        internal void _QueueLeafUpdate(NGraphics graphics)
+        {
+            if (_dirtyLeafSet.Add(graphics))
+                _dirtyLeaves.Add(graphics);
+        }
+
+        void OnWatchedTextureChanged(NTexture texture)
+        {
+            //sub-atlas movement / atlas rebuild: segment textures are stale
+            _structureDirty = true;
+        }
+
+        /// <summary>
+        /// Applies queued push notifications: structure-dirty recompiles; dirty
+        /// leaves get tier-2 partial rewrites (falling back to a recompile when a
+        /// leaf's quad count changed). Render() calls this automatically in
+        /// in-place mode.
+        /// </summary>
+        public void Flush()
+        {
+            if (_structureDirty)
+            {
+                _structureDirty = false;
+                _dirtyLeaves.Clear();
+                _dirtyLeafSet.Clear();
+                Extract();
+                return;
+            }
+
+            if (_dirtyLeaves.Count > 0)
+            {
+                for (int i = 0; i < _dirtyLeaves.Count; i++)
+                {
+                    NGraphics g = _dirtyLeaves[i];
+                    if (_inPlace && g._instancedBy != this)
+                        continue; //released while queued
+                    if (!UpdateLeaf(g))
+                        _structureDirty = true;
+                }
+                _dirtyLeaves.Clear();
+                _dirtyLeafSet.Clear();
+                if (_structureDirty)
+                {
+                    _structureDirty = false;
+                    Extract();
+                }
+            }
+        }
+
         /// <summary>
         /// drawOffset shifts the stream in container space (0 for in-place rendering,
         /// non-zero for side-by-side verification replicas). sortAdjacency applies the
         /// FairyBatching adjacency sort during Extract to shrink segment count.
+        ///
+        /// inPlace makes the stream REPLACE native rendering: extracted leaves stop
+        /// rendering through their own MeshRenderer (claim mark lives on the leaf,
+        /// which self-recovers on dispose/reparent), and the push channels — content,
+        /// transform, visible, structure — drive updates automatically; call Render()
+        /// once per frame after the stage update and everything else follows.
         /// </summary>
-        public InstancedUIStream(Container container, Vector2 drawOffset = default, bool sortAdjacency = true)
+        public InstancedUIStream(Container container, Vector2 drawOffset = default, bool sortAdjacency = true, bool inPlace = false)
         {
             _container = container;
             _drawOffset = drawOffset;
             _sortAdjacency = sortAdjacency;
+            _inPlace = inPlace;
+            _onWatchedTexture = OnWatchedTextureChanged;
+            if (inPlace)
+            {
+                liveInPlaceCount++;
+                container._instancedStream = this;
+                _structureDirty = true;
+            }
             _shader = Shader.Find("FairyGUI/InstancedUI");
 
             _quadMesh = new Mesh();
@@ -227,7 +372,9 @@ namespace FairyGUI
                 _skippedPairs = 0;
                 _maskedSubtrees = 0;
 
-                ComputeExternalWindow();
+                foreach (var t in _watchedTextures)
+                    t.onSizeChanged -= _onWatchedTexture;
+                _watchedTextures.Clear();
 
                 Matrix4x4 worldToLocal = _container.cachedTransform.worldToLocalMatrix;
                 ExtractContainer(_container, worldToLocal, 0);
@@ -236,6 +383,30 @@ namespace FairyGUI
                     AdjacencySorter.Sort(_entries);
                 for (int i = 0; i < _entries.Count; i++)
                     AppendLeaf(_pending[_entries[i].payload]);
+
+                if (_inPlace)
+                {
+                    //claim diff: leaves that left the stream resume native
+                    //rendering; new leaves stop rendering natively
+                    _claimScratch.Clear();
+                    for (int i = 0; i < _leaves.Count; i++)
+                        _claimScratch.Add(_leaves[i].graphics);
+                    foreach (var g in _claimed)
+                    {
+                        //ownership check: another stream may have claimed this
+                        //leaf since it left us (cross-root move, review M9)
+                        if (!_claimScratch.Contains(g) && g._instancedBy == this)
+                            g._ClearInstancedOwner();
+                    }
+                    foreach (var g in _claimScratch)
+                    {
+                        if (!_claimed.Contains(g))
+                            g._SetInstancedOwner(this);
+                    }
+                    var tmp = _claimed;
+                    _claimed = _claimScratch;
+                    _claimScratch = tmp;
+                }
 
                 if (_buffer != null)
                     _buffer.Release();
@@ -281,6 +452,15 @@ namespace FairyGUI
                 DisplayObject child = container.GetChildAt(i);
                 if (!child.visible)
                     continue;
+
+                //painting scopes (filter/blend/perspective/cacheAsBitmap) render
+                //through their own capture pipeline — leave them native (M5 will
+                //interleave; review M12)
+                if (child._paintingMode > 0)
+                {
+                    _maskedSubtrees++;
+                    continue;
+                }
 
                 if (child.graphics != null && child.graphics.texture != null)
                     ExtractLeaf(child.graphics, worldToLocal, clipIndex);
@@ -346,9 +526,15 @@ namespace FairyGUI
             Mesh mesh = graphics.mesh;
             if (mesh == null || mesh.vertexCount == 0)
                 return;
+            //enabled is an admission condition (review M10/M14); its setter pushes
+            if (graphics.meshRenderer != null && !graphics.meshRenderer.enabled)
+                return;
             Texture tex = graphics.texture.nativeTexture;
             if (tex == null)
                 return;
+
+            if (_inPlace && _watchedTextures.Add(graphics.texture))
+                graphics.texture.onSizeChanged += _onWatchedTexture;
 
             bool alphaTex = graphics.shader == ShaderConfig.textShader;
             uint flags = alphaTex ? QuadInstance.FlagAlphaTexture : 0u;
@@ -386,6 +572,7 @@ namespace FairyGUI
         void AppendLeaf(PendingLeaf leaf)
         {
             //segment on texture change in (sorted) submission order
+            bool segCreated = false;
             Segment seg = _segments.Count > 0 ? _segments[_segments.Count - 1] : null;
             if (seg == null || seg.texture != leaf.texture)
             {
@@ -396,6 +583,7 @@ namespace FairyGUI
                     start = _quads.Count
                 };
                 _segments.Add(seg);
+                segCreated = true;
             }
 
             Mesh mesh = leaf.graphics.mesh;
@@ -407,7 +595,18 @@ namespace FairyGUI
             var range = new LeafRange { graphics = leaf.graphics, start = _quads.Count, flags = leaf.flags, clipIndex = leaf.clipIndex };
             int skipped;
             range.count = QuadReassembler.Append(_quads, sVerts, sUVs, sColors, sTris, leaf.matrix, _drawOffset, leaf.flags, out skipped);
-            _skippedPairs += skipped;
+            if (skipped > 0)
+            {
+                //non-quad topology: all-or-nothing — roll the leaf back so its
+                //native renderer keeps drawing it whole (fallback path)
+                _skippedPairs += skipped;
+                _quads.RemoveRange(range.start, range.count);
+                if (segCreated && _quads.Count == seg.start)
+                    _segments.RemoveAt(_segments.Count - 1);
+                else
+                    seg.count = _quads.Count - seg.start;
+                return;
+            }
             StampClipIndex(range.start, range.count, leaf.clipIndex);
             seg.count = _quads.Count - seg.start;
             _leaves.Add(range);
@@ -475,8 +674,8 @@ namespace FairyGUI
                 sLeafScratch.Clear();
                 int skipped;
                 int rebuilt = QuadReassembler.Append(sLeafScratch, sVerts, sUVs, sColors, sTris, m, _drawOffset, range.flags, out skipped);
-                if (rebuilt != range.count)
-                    return false;
+                if (rebuilt != range.count || skipped > 0)
+                    return false; //count changed or topology went non-quad: recompile
 
                 for (int i = 0; i < rebuilt; i++)
                 {
@@ -500,8 +699,19 @@ namespace FairyGUI
             using (sRender.Auto())
 #endif
             {
+                if (_inPlace)
+                {
+                    if (_container.isDisposed || !_container.visible || !_container.gameObject.activeInHierarchy)
+                        return;
+                    Flush();
+                }
+
                 if (_buffer == null)
                     return;
+
+                //recomputed every frame: in in-place mode the container itself moves
+                //when its ScrollPane scrolls, while the mask window stays put
+                ComputeExternalWindow();
 
                 Matrix4x4 l2w = _container.cachedTransform.localToWorldMatrix;
                 int layer = _container.gameObject.layer;
@@ -534,6 +744,22 @@ namespace FairyGUI
 
         public void Dispose()
         {
+            if (_inPlace)
+            {
+                foreach (var g in _claimed)
+                {
+                    if (g._instancedBy == this)
+                        g._ClearInstancedOwner();
+                }
+                _claimed.Clear();
+                if (_container._instancedStream == this)
+                    _container._instancedStream = null;
+                liveInPlaceCount--;
+                _inPlace = false;
+            }
+            foreach (var t in _watchedTextures)
+                t.onSizeChanged -= _onWatchedTexture;
+            _watchedTextures.Clear();
             if (_buffer != null)
             {
                 _buffer.Release();

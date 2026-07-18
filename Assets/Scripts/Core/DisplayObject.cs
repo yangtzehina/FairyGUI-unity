@@ -302,6 +302,9 @@ namespace FairyGUI
                     }
                     else
                         gameObject.SetActive(false);
+                    //push in BOTH directions (review M8: the hide branch skips
+                    //InvalidateBatchingState, so notify the stream directly)
+                    InstancedUIStream._NotifyStructure(this);
                 }
             }
         }
@@ -386,6 +389,7 @@ namespace FairyGUI
             {
                 cachedTransform.localPosition = v;
                 _flags |= Flags.OutlineChanged;
+                InstancedUIStream._NotifyTransform(this);
                 if ((_flags & Flags.PixelPerfect) != 0)
                 {
                     //总在下一帧再完成PixelPerfect，这样当物体在连续运动时，不会因为PixelPerfect而发生抖动。
@@ -553,6 +557,7 @@ namespace FairyGUI
             v.y = ValidateScale(yv);
             cachedTransform.localScale = v;
             _flags |= Flags.OutlineChanged;
+            InstancedUIStream._NotifyTransform(this);
             ApplyPivot();
         }
 
@@ -599,6 +604,7 @@ namespace FairyGUI
             {
                 _rotation.z = -value;
                 _flags |= Flags.OutlineChanged;
+                InstancedUIStream._NotifyTransform(this);
                 if (_perspective)
                     UpdateTransformMatrix();
                 else
@@ -622,6 +628,7 @@ namespace FairyGUI
             {
                 _rotation.x = value;
                 _flags |= Flags.OutlineChanged;
+                InstancedUIStream._NotifyTransform(this);
                 if (_perspective)
                     UpdateTransformMatrix();
                 else
@@ -645,6 +652,7 @@ namespace FairyGUI
             {
                 _rotation.y = value;
                 _flags |= Flags.OutlineChanged;
+                InstancedUIStream._NotifyTransform(this);
                 if (_perspective)
                     UpdateTransformMatrix();
                 else
@@ -665,6 +673,7 @@ namespace FairyGUI
             {
                 _skew = value;
                 _flags |= Flags.OutlineChanged;
+                InstancedUIStream._NotifyTransform(this);
 
                 if (!Application.isPlaying) //编辑期间不支持！！
                     return;
@@ -997,6 +1006,25 @@ namespace FairyGUI
         {
             if (parent != value)
             {
+                //notify the OLD chain before the switch, and self-recover claimed
+                //leaves immediately: the mark travels with the leaf (review M13/M9)
+                InstancedUIStream._NotifyStructure(this);
+                if (graphics != null && graphics._instancedBy != null)
+                {
+                    graphics._instancedBy._MarkStructureDirty();
+                    graphics._ClearInstancedOwner();
+                }
+                if (graphics != null && graphics.subInstances != null)
+                {
+                    foreach (var sub in graphics.subInstances)
+                    {
+                        if (sub._instancedBy != null)
+                        {
+                            sub._instancedBy._MarkStructureDirty();
+                            sub._ClearInstancedOwner();
+                        }
+                    }
+                }
                 if (value == null && (parent._flags & Flags.Disposed) != 0)
                     parent = value;
                 else
@@ -1121,6 +1149,8 @@ namespace FairyGUI
             _paintingMode |= requestorId;
             if (first)
             {
+                //painting scopes leave the instanced stream (fallback, review M12)
+                InstancedUIStream._NotifyStructure(this);
                 if (_paintingInfo == null)
                 {
                     _paintingInfo = new PaintingInfo()
@@ -1176,6 +1206,7 @@ namespace FairyGUI
             _paintingMode ^= requestorId;
             if (_paintingMode == 0)
             {
+                InstancedUIStream._NotifyStructure(this);
                 paintingGraphics.enabled = false;
 
                 if (this is Container)
@@ -1578,6 +1609,7 @@ namespace FairyGUI
         /// </summary>
         public void InvalidateBatchingState()
         {
+            InstancedUIStream._NotifyStructure(this);
             if (parent != null)
                 parent.InvalidateBatchingState(true);
         }

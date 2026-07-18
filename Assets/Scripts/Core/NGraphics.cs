@@ -80,6 +80,29 @@ namespace FairyGUI
         //so a MergedBatch can detect changes with a managed int compare
         internal int _contentVersion;
 
+        //the instanced stream currently rendering this leaf in place of the native
+        //renderer. The mark lives on the LEAF: dispose/reparent clears it from the
+        //leaf side so recovery never depends on the batch's lifecycle.
+        internal InstancedUIStream _instancedBy;
+        //kept after release so re-admission conditions (enabled=true) can still
+        //reach a stream; stale marks only cost one redundant recompile
+        internal InstancedUIStream _lastInstancedBy;
+
+        internal void _SetInstancedOwner(InstancedUIStream stream)
+        {
+            _instancedBy = stream;
+            _lastInstancedBy = stream;
+            if (meshRenderer != null)
+                meshRenderer.forceRenderingOff = true;
+        }
+
+        internal void _ClearInstancedOwner()
+        {
+            _instancedBy = null;
+            if (meshRenderer != null)
+                meshRenderer.forceRenderingOff = false;
+        }
+
         internal bool hasPropertyBlock
         {
             get { return _propertyBlock != null; }
@@ -373,7 +396,19 @@ namespace FairyGUI
         public bool enabled
         {
             get { return meshRenderer.enabled; }
-            set { meshRenderer.enabled = value; }
+            set
+            {
+                if (meshRenderer.enabled != value)
+                {
+                    meshRenderer.enabled = value;
+                    //enabled is an instancing admission condition (review M10/M14):
+                    //push so the stream re-evaluates membership; after a release
+                    //only _lastInstancedBy still knows who might re-admit us
+                    var s = _instancedBy != null ? _instancedBy : _lastInstancedBy;
+                    if (s != null)
+                        s._MarkStructureDirty();
+                }
+            }
         }
 
         /// <summary>
@@ -460,6 +495,10 @@ namespace FairyGUI
             mesh.SetColors(vb.colors);
             vb.End();
             _contentVersion++;
+            if (_instancedBy != null)
+                _instancedBy._QueueLeafUpdate(this);
+            else if (_lastInstancedBy != null)
+                _lastInstancedBy._MarkStructureDirty(); //re-admission (e.g. topology became quad again)
         }
 
         void ChangeAlpha(float value)
@@ -483,6 +522,10 @@ namespace FairyGUI
             mesh.SetColors(vb.colors);
             vb.End();
             _contentVersion++;
+            if (_instancedBy != null)
+                _instancedBy._QueueLeafUpdate(this);
+            else if (_lastInstancedBy != null)
+                _lastInstancedBy._MarkStructureDirty(); //re-admission (e.g. topology became quad again)
         }
 
         /// <summary>
@@ -564,6 +607,14 @@ namespace FairyGUI
         /// </summary>
         public void Dispose()
         {
+            if (_instancedBy != null)
+            {
+                //leaf-side self-recovery: the stream must not keep rendering a
+                //disposed leaf, and the mark must not outlive the leaf
+                _instancedBy._MarkStructureDirty();
+                _ClearInstancedOwner();
+            }
+            _lastInstancedBy = null;
             if (mesh != null)
             {
                 if (Application.isPlaying)
@@ -742,6 +793,10 @@ namespace FairyGUI
         {
             _meshDirty = false;
             _contentVersion++;
+            if (_instancedBy != null)
+                _instancedBy._QueueLeafUpdate(this);
+            else if (_lastInstancedBy != null)
+                _lastInstancedBy._MarkStructureDirty(); //re-admission (e.g. topology became quad again)
 
             if (_texture == null || _meshFactory == null)
             {
