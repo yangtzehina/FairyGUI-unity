@@ -414,8 +414,12 @@ FuiReader 解析组件树与图集 sprite 矩形——**布局结构与图集 UV
 
 ### 不能/不必：生成 shader
 
-- Roslyn SG 只能产 C#；Unity shader 走 ShaderLab/SRP 导入管线，代码生成
-  shader 得做编辑器资产管线，是另一件工具（且没有需求支撑）。
+- 措辞精确化（2026-07-20，核对 ComputeSharp 后）：Roslyn SG **技术上可以**
+  在编译期转译并嵌入 shader（ComputeSharp 即此路线：C#→HLSL + 预编译字节码，
+  Microsoft Store/Paint.NET 在产）。在 Unity 不通的真正原因是 shader 必须走
+  ShaderLab 导入器与构建期变体编译管线，目标平台（尤其移动端）没有运行时
+  shader 编译器；ComputeSharp 依赖 Windows 的 DXC 且自管 pipeline state，
+  两个前提 Unity 都不给。结论不变：不做。
 - 单 shader + flags 静态分支已覆盖 primitive 集（M7 的 SDF 也是加字段不加
   变体）；平台差异走 multi_compile（M6）。per-组件生成 shader 变体 = 变体
   切换断批，恰是 v4 要消灭的东西。
