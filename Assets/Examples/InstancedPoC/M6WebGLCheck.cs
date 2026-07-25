@@ -26,6 +26,13 @@ public class M6WebGLCheck : MonoBehaviour
     }
 #endif
 
+    //CI thresholds (batch 4): the ladder-1 editor runs measured mean ~0.1 and
+    //badPx ~0.02% for a healthy takeover; anything an order beyond that is a
+    //real divergence, not noise
+    const double kMaxMean = 1.5;
+    const double kMaxBadPct = 0.5;
+    bool _failed;
+
     GList _list;
     GComponent _ui;
     InstancedUIStream _stream;
@@ -85,6 +92,8 @@ public class M6WebGLCheck : MonoBehaviour
                 _b = Capture();
                 Debug.Log($"M6CHECK takeover: segments={_stream.segmentCount} quads={_stream.quadCount} skipped={_stream.lastSkippedPairs}");
                 Debug.Log("M6CHECK static: " + Diff(_a, _b));
+                if (_stream.quadCount == 0)
+                    _failed = true; //takeover produced nothing: unconditionally wrong
                 _list.scrollPane.posY = 130;
                 break;
             case 13:
@@ -95,6 +104,10 @@ public class M6WebGLCheck : MonoBehaviour
             case 17:
                 var d = Capture();
                 Debug.Log("M6CHECK scrolled: " + Diff(_c, d));
+                //single machine-readable verdict line: the hosting page/CI greps
+                //for "M6CHECK VERDICT" and exits on its PASS/FAIL
+                Debug.Log("M6CHECK VERDICT: " + (_failed ? "FAIL" : "PASS")
+                    + $" (thresholds mean<{kMaxMean} badPx<{kMaxBadPct}%)");
                 Debug.Log("M6CHECK DONE");
                 _list.scrollPane.posY = 0;
                 _list.clipSoftness = _savedSoftness;
@@ -133,7 +146,7 @@ public class M6WebGLCheck : MonoBehaviour
         return px;
     }
 
-    static string Diff(Color32[] a, Color32[] b)
+    string Diff(Color32[] a, Color32[] b)
     {
         long sum = 0;
         int worst = 0, bad = 0;
@@ -144,7 +157,11 @@ public class M6WebGLCheck : MonoBehaviour
             if (d > worst) worst = d;
             if (d > 24) bad++;
         }
-        return $"mean={(double)sum / a.Length:F3} worst={worst} badPx={bad} ({100.0 * bad / a.Length:F3}%)";
+        double mean = (double)sum / a.Length;
+        double badPct = 100.0 * bad / a.Length;
+        if (mean > kMaxMean || badPct > kMaxBadPct)
+            _failed = true;
+        return $"mean={mean:F3} worst={worst} badPx={bad} ({badPct:F3}%)";
     }
 }
 #endif

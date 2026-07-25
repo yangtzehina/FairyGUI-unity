@@ -54,6 +54,33 @@ namespace FairyGUI
         DisplayObject _mask;
         //the instanced stream rooted at this container (in-place mode), if any
         internal InstancedUIStream _instancedStream;
+
+        /// <summary>
+        /// v4 instanced rendering (design docs/design/instanced-renderer-v4.md):
+        /// compiles this container's subtree into a GPU-resident quad instance
+        /// stream — leaves stop rendering through their own MeshRenderers and
+        /// updates flow through the push channels (content/transform/visible/
+        /// structure), with interior movement promoted to transform slots.
+        /// Fully automatic: the Stage drives all streams each frame and the
+        /// stream disposes with the container. Mutually exclusive with the
+        /// deprecated mergedBatching (enabling this disables that).
+        /// </summary>
+        public bool instancedRendering
+        {
+            get { return _instancedStream != null; }
+            set
+            {
+                if (value == (_instancedStream != null))
+                    return;
+                if (value)
+                    new InstancedUIStream(this, Vector2.zero, true, true); //registers itself
+                else
+                {
+                    _instancedStream.Dispose();
+                    _instancedStream = null;
+                }
+            }
+        }
         Rect? _clipRect;
         List<BatchElement> _batchElements;
         MergedBatch _mergedBatch;
@@ -1038,6 +1065,15 @@ namespace FairyGUI
             {
                 _mergedBatch.Dispose();
                 _mergedBatch = null;
+            }
+
+            if (_instancedStream != null)
+            {
+                //engine-level lifecycle (batch 4): the stream dies with its
+                //container — releases GPU buffers, pooled segment GOs and the
+                //claimed leaves' native rendering
+                _instancedStream.Dispose();
+                _instancedStream = null;
             }
 
             base.Dispose(); //Destroy GameObject tree first, avoid destroying each seperately;

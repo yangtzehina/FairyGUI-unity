@@ -107,7 +107,7 @@ namespace FairyGUI
             sGlyphBuf?.Release(); sGlyphBuf = null;
         }
 
-        // ---------- TTF parsing (glyf quadratics; see CurveTextPoC for the PoC origin) ----------
+        // ---------- TTF parsing (glyf quadratics; PoC origin: Examples/CurveTextPoC, archived in batch 4 — M9b integrated this path) ----------
 
         static int tHead, tLoca, tGlyf, tHmtx, tCmap4;
         static int sIndexToLoc, sNumHMetrics, sSegCount;

@@ -795,6 +795,8 @@ namespace FairyGUI
             _updateContext.Begin();
             Update(_updateContext);
             _updateContext.End();
+
+            InstancedUIStream.RenderAll();
         }
 
         internal void InternalUpdate()
@@ -834,6 +836,10 @@ namespace FairyGUI
 
                 BaseFont.textRebuildFlag = false;
             }
+
+            //v4 instanced streams flush their push queues and sync their segment
+            //renderers AFTER the tree walk (renderingOrder is assigned there)
+            InstancedUIStream.RenderAll();
 
             if (afterUpdate != null)
                 afterUpdate();

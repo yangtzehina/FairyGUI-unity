@@ -43,6 +43,29 @@ namespace FairyGUI
         //compare when no in-place stream exists
         internal static int liveInPlaceCount;
 
+        //productization (batch 4): every in-place stream registers here; the
+        //Stage drives them all after each update pass, so users only toggle
+        //Container.instancedRendering and never call Render() themselves
+        static readonly List<InstancedUIStream> sLiveStreams = new List<InstancedUIStream>();
+
+        /// <summary>Copies the live in-place streams into results (diagnostics).</summary>
+        public static void GetLiveStreams(List<InstancedUIStream> results)
+        {
+            results.Clear();
+            results.AddRange(sLiveStreams);
+        }
+
+        /// <summary>
+        /// Renders every live in-place stream. The Stage calls this after its
+        /// update pass (renderingOrder must be assigned first); a second call in
+        /// the same frame is a cheap no-op (queues empty, uniforms unchanged).
+        /// </summary>
+        public static void RenderAll()
+        {
+            for (int i = sLiveStreams.Count - 1; i >= 0; i--)
+                sLiveStreams[i].Render();
+        }
+
         /// <summary>
         /// Editor A/B switch: force new streams onto the vertex-stream backend even
         /// where vertex StructuredBuffers are available (M6 validation ladder 1).
@@ -328,6 +351,15 @@ namespace FairyGUI
 
         public int segmentCount { get { return _segments.Count; } }
 
+        /// <summary>The stream's root container (diagnostics).</summary>
+        public Container container { get { return _container; } }
+
+        /// <summary>Which backend this stream compiled against (diagnostics).</summary>
+        public string backendName { get { return _vertexPath ? "vertex-stream" : "buffer"; } }
+
+        /// <summary>Leaves currently claimed away from native rendering (diagnostics).</summary>
+        public int claimedLeafCount { get { return _claimed.Count; } }
+
         /// <summary>Validation/diagnostics probe: full recompiles since construction.</summary>
         public int extractCount { get; private set; }
 
@@ -512,6 +544,7 @@ namespace FairyGUI
 #pragma warning restore 618
                 liveInPlaceCount++;
                 container._instancedStream = this;
+                sLiveStreams.Add(this);
                 _structureDirty = true;
             }
             _vertexPath = useVertexPath;
@@ -1935,6 +1968,7 @@ namespace FairyGUI
                 if (_container._instancedStream == this)
                     _container._instancedStream = null;
                 liveInPlaceCount--;
+                sLiveStreams.Remove(this);
                 _inPlace = false;
             }
             foreach (var t in _watchedTextures)

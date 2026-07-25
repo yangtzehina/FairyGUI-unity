@@ -96,6 +96,14 @@ DisplayObject 树（不动）
 `_batchElements` 排序结果），开关为 `Container.instancedRendering`（与
 `mergedBatching` 互斥，后者进入废弃期）。
 
+**已产品化（批 4，2026-07-25）**：`Container.instancedRendering` / `GComponent.instancedRendering`
+（组件级取 clip owner 为流根，滚动窗口成为外窗口、内容滚动走 transform 槽）；Stage 在每帧
+更新走完后自动驱动全部流（`InstancedUIStream.RenderAll`，含字体重建二遍之后），容器销毁自动
+拆流释放 GPU 资源。诊断面板 FairyGUI/Instanced UI Streams（段/quads/runs/clips/槽/认领/重编译
+计数与 fallback 原因）。WebGL 验证 CI 化：M6CHECK 输出单行 `M6CHECK VERDICT: PASS|FAIL`
+（阈值 mean<1.5、badPx<0.5%），构建入口 `FairyGUIEditor.InstancedCIBuild.BuildWebGL`。
+Examples/CurveTextPoC 已归档删除（M9b 集成路径取代）。
+
 ---
 
 ## 4. 数据模型

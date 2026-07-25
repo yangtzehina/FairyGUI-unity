@@ -143,6 +143,19 @@ namespace FairyGUI
 #pragma warning restore 618
         }
 
+        /// <summary>
+        /// v4 instanced rendering switch for this component (see
+        /// Container.instancedRendering). Targets the same container the
+        /// batching switches do: the clip owner when one exists (a scroll
+        /// view's mask — its window becomes the stream's external clip and
+        /// interior scrolling rides a transform slot), else the root.
+        /// </summary>
+        public bool instancedRendering
+        {
+            get { return GetMergedBatchingTarget().instancedRendering; }
+            set { GetMergedBatchingTarget().instancedRendering = value; }
+        }
+
         Container GetMergedBatchingTarget()
         {
             Container t = container;
