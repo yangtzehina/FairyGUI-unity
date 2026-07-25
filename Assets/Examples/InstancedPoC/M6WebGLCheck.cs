@@ -18,6 +18,10 @@ public class M6WebGLCheck : MonoBehaviour
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     static void Boot()
     {
+        //validation harness only: never self-start in a release build (it takes
+        //over the first list, resets its scroll state and reads pixels back)
+        if (!Debug.isDebugBuild)
+            return;
         new GameObject("M6WebGLCheck").AddComponent<M6WebGLCheck>();
     }
 #endif
@@ -25,6 +29,8 @@ public class M6WebGLCheck : MonoBehaviour
     GList _list;
     GComponent _ui;
     InstancedUIStream _stream;
+    Vector2 _savedSoftness;
+    int _waited;
     int _frame = -1;
     Color32[] _a, _b, _c;
     readonly StringBuilder _log = new StringBuilder();
@@ -33,6 +39,13 @@ public class M6WebGLCheck : MonoBehaviour
     {
         if (_list == null)
         {
+            //no panel/list within a sane window: stop searching, don't idle forever
+            if (++_waited > 600)
+            {
+                Debug.Log("M6CHECK ABORT: no populated list found");
+                Destroy(gameObject);
+                return;
+            }
             var panel = Object.FindObjectOfType<UIPanel>();
             if (panel == null || panel.ui == null)
                 return;
@@ -51,6 +64,7 @@ public class M6WebGLCheck : MonoBehaviour
                 return;
             _list = found;
             _ui = panel.ui;
+            _savedSoftness = _list.clipSoftness;
             _list.clipSoftness = Vector2.zero; //neutralize known softness divergence
             _list.scrollPane.posY = 0;
             _frame = 0;
@@ -83,6 +97,7 @@ public class M6WebGLCheck : MonoBehaviour
                 Debug.Log("M6CHECK scrolled: " + Diff(_c, d));
                 Debug.Log("M6CHECK DONE");
                 _list.scrollPane.posY = 0;
+                _list.clipSoftness = _savedSoftness;
                 Destroy(gameObject);
                 break;
         }

@@ -113,7 +113,9 @@ Shader "FairyGUI/InstancedUI"
                 o.pos = mul(UNITY_MATRIX_VP, world);
                 o.uv = uv;
                 o.scrolledPos = local;
-                o.rawPos = float3(raw, (d.flags & 1u) != 0u ? 1.0 : 0.0);
+                //z packs two per-quad bits: +1 alpha-only texture, +2 grayed
+                o.rawPos = float3(raw, ((d.flags & 1u) != 0u ? 1.0 : 0.0)
+                    + ((d.flags & 16u) != 0u ? 2.0 : 0.0));
                 o.clipRect = ce.rect;
                 o.clipSoft = ce.soft;
                 //M7 SDF primitives: mode from flags bits 1-2, border width from
@@ -240,9 +242,15 @@ Shader "FairyGUI/InstancedUI"
                     discard;
 
                 fixed4 tex = tex2D(_MainTex, i.uv);
-                if (i.rawPos.z > 0.5)
+                if (fmod(i.rawPos.z, 2.0) >= 1.0)
                     tex = fixed4(1, 1, 1, tex.a);
                 fixed4 col = i.color * tex;
+                if (i.rawPos.z > 1.5)
+                {
+                    //grayed (flags bit4), same weights as FairyGUI's GRAYED variant
+                    fixed grey = dot(col.rgb, fixed3(0.299, 0.587, 0.114));
+                    col.rgb = fixed3(grey, grey, grey);
+                }
                 if (i.sdfMW.y > 2.5)
                     col.a *= curveCoverage(i.uv, (uint)(i.sdfMW.x + 0.5)); //uv = em-space pos
                 else if (i.sdfMW.y > 0.5)

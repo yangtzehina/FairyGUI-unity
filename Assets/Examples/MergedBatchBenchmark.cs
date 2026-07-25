@@ -19,6 +19,7 @@ using Unity.Profiling;
 /// Usage: MergedBatchBenchmark.Run(container, "/path/out.json", 60, optionalScrollPane);
 /// </summary>
 [DefaultExecutionOrder(1000)]
+#pragma warning disable 618 //benchmarks the deprecated MergedBatch on purpose
 public class MergedBatchBenchmark : MonoBehaviour
 {
     public static void Run(Container target, string outputPath, int samplesPerPhase = 60, ScrollPane scrollPane = null)

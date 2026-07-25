@@ -44,6 +44,11 @@ namespace FairyGUI
         //coordinates — the interpolated uv IS the outline-space position.
         public const uint FlagCurveGlyph = 1u << 3;
 
+        //effective grayed state (own OR inherited, mirroring UpdateContext.grayed
+        //accumulation); the design doc originally reserved bit1, which M7 took —
+        //grayed lives at bit4
+        public const uint FlagGrayed = 1u << 4;
+
         public static uint PackRadii(float bottomLeft, float bottomRight, float topLeft, float topRight)
         {
             uint bl = (uint)Mathf.Clamp(Mathf.RoundToInt(bottomLeft), 0, 255);

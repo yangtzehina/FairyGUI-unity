@@ -377,6 +377,21 @@ namespace FairyGUI
             _onWatchedTexture = OnWatchedTextureChanged;
             if (inPlace)
             {
+                //mutual exclusion (review batch 1): one in-place stream per
+                //container, and never on top of the deprecated MergedBatch —
+                //both toggle the same forceRenderingOff flags on the leaves
+                if (container._instancedStream != null)
+                {
+                    Debug.LogError("InstancedUIStream: container already has an in-place stream; disposing the old one.");
+                    container._instancedStream.Dispose();
+                }
+#pragma warning disable 618
+                if (container.mergedBatching)
+                {
+                    Debug.LogError("InstancedUIStream: container has mergedBatching enabled (deprecated); disabling it.");
+                    container.mergedBatching = false;
+                }
+#pragma warning restore 618
                 liveInPlaceCount++;
                 container._instancedStream = this;
                 _structureDirty = true;
@@ -468,7 +483,7 @@ namespace FairyGUI
                 _watchedTextures.Clear();
 
                 Matrix4x4 worldToLocal = _container.cachedTransform.worldToLocalMatrix;
-                ExtractContainer(_container, worldToLocal, 0);
+                ExtractContainer(_container, worldToLocal, 0, _container.grayed);
 
                 if (_sortAdjacency)
                     AdjacencySorter.Sort(_entries);
@@ -694,7 +709,7 @@ namespace FairyGUI
             seg.renderer = null;
         }
 
-        void ExtractContainer(Container container, Matrix4x4 worldToLocal, uint clipIndex)
+        void ExtractContainer(Container container, Matrix4x4 worldToLocal, uint clipIndex, bool grayed)
         {
             int cnt = container.numChildren;
             for (int i = 0; i < cnt; i++)
@@ -702,6 +717,8 @@ namespace FairyGUI
                 DisplayObject child = container.GetChildAt(i);
                 if (!child.visible)
                     continue;
+                //grayed inherits down, mirroring UpdateContext.grayed accumulation
+                bool childGrayed = grayed || child.grayed;
 
                 //painting scopes (filter/blend/perspective/cacheAsBitmap) render
                 //through their own capture pipeline — leave them native (M5 will
@@ -713,13 +730,13 @@ namespace FairyGUI
                 }
 
                 if (child.graphics != null && child.graphics.texture != null)
-                    ExtractLeaf(child.graphics, worldToLocal, clipIndex);
+                    ExtractLeaf(child.graphics, worldToLocal, clipIndex, childGrayed);
 
                 if (child.graphics != null && child.graphics.subInstances != null)
                 {
                     foreach (var sub in child.graphics.subInstances)
                         if (sub.texture != null)
-                            ExtractLeaf(sub, worldToLocal, clipIndex);
+                            ExtractLeaf(sub, worldToLocal, clipIndex, childGrayed);
                 }
 
                 if (child is Container c)
@@ -733,7 +750,7 @@ namespace FairyGUI
                     uint childClip = clipIndex;
                     if (c.clipRect != null)
                         childClip = PushClip(c, worldToLocal, clipIndex);
-                    ExtractContainer(c, worldToLocal, childClip);
+                    ExtractContainer(c, worldToLocal, childClip, childGrayed);
                 }
             }
         }
@@ -785,7 +802,7 @@ namespace FairyGUI
             return (uint)(_clipEntries.Count - 1);
         }
 
-        void ExtractLeaf(NGraphics graphics, Matrix4x4 worldToLocal, uint clipIndex)
+        void ExtractLeaf(NGraphics graphics, Matrix4x4 worldToLocal, uint clipIndex, bool grayed)
         {
             Mesh mesh = graphics.mesh;
             if (mesh == null || mesh.vertexCount == 0)
@@ -802,6 +819,8 @@ namespace FairyGUI
 
             bool alphaTex = graphics.shader == ShaderConfig.textShader;
             uint flags = alphaTex ? QuadInstance.FlagAlphaTexture : 0u;
+            if (grayed)
+                flags |= QuadInstance.FlagGrayed;
             Matrix4x4 m = worldToLocal * graphics.gameObject.transform.localToWorldMatrix;
 
             //stream-local AABB for the overlap test (transform the mesh AABB's
@@ -830,8 +849,24 @@ namespace FairyGUI
             //overlap, exactly the legality rule native FairyBatching uses
             var p = new PendingLeaf { graphics = graphics, texture = tex, flags = flags, clipIndex = clipIndex, stageStart = _staging.Count };
 
+            //non-Normal blend modes cannot join the stream (its blend state is
+            //fixed): keep the native renderer, act as a sort barrier (review batch 1)
+            if (graphics.blendMode != BlendMode.Normal)
+            {
+                p.stageCount = 0;
+                p.instanceable = false;
+                _entries.Add(new AdjacencyEntry
+                {
+                    key = null,
+                    x0 = bmin.x, y0 = bmin.y, x1 = bmax.x, y1 = bmax.y,
+                    payload = _pending.Count
+                });
+                _pending.Add(p);
+                return;
+            }
+
             //M9b: curve-text leaves emit one analytic glyph quad per character
-            int curveCount = EmitCurveQuads(graphics, m, _staging);
+            int curveCount = EmitCurveQuads(graphics, m, _staging, flags & QuadInstance.FlagGrayed);
             if (curveCount > 0)
             {
                 p.stageCount = curveCount;
@@ -850,7 +885,7 @@ namespace FairyGUI
 
             //M7: rounded/stroked rect and circle shapes bypass their triangulated
             //mesh entirely — analytic SDF coverage from 1-2 quads
-            int sdfCount = EmitSdfQuads(graphics, m, _staging);
+            int sdfCount = EmitSdfQuads(graphics, m, _staging, flags & QuadInstance.FlagGrayed);
             if (sdfCount > 0)
             {
                 p.stageCount = sdfCount;
@@ -904,7 +939,7 @@ namespace FairyGUI
         /// 0 when the factory is not SDF-expressible (gradient ellipses, pies,
         /// rotated/non-uniformly-scaled leaves fall back to the mesh path).
         /// </summary>
-        int EmitSdfQuads(NGraphics graphics, Matrix4x4 m, List<QuadInstance> dst)
+        int EmitSdfQuads(NGraphics graphics, Matrix4x4 m, List<QuadInstance> dst, uint extraFlags)
         {
             float rBL, rBR, rTL, rTR, lineWidth;
             Color32 lineColor;
@@ -967,13 +1002,13 @@ namespace FairyGUI
             //the border quad appears only when a line width exists
             Color fc = fill;
             fc.a *= alpha;
-            wBits = QuadInstance.PackBorderWidth(QuadInstance.FlagSdfFill, lineWidth * s);
+            wBits = QuadInstance.PackBorderWidth(QuadInstance.FlagSdfFill | extraFlags, lineWidth * s);
             dst.Add(new QuadInstance { rect = rect, color = fc, flags = wBits, padding = radii });
             if (lineWidth > 0)
             {
                 Color lc = lineColor;
                 lc.a *= alpha;
-                wBits = QuadInstance.PackBorderWidth(QuadInstance.FlagSdfBorder, lineWidth * s);
+                wBits = QuadInstance.PackBorderWidth(QuadInstance.FlagSdfBorder | extraFlags, lineWidth * s);
                 dst.Add(new QuadInstance { rect = rect, color = lc, flags = wBits, padding = radii });
                 return 2;
             }
@@ -986,7 +1021,7 @@ namespace FairyGUI
         /// the glyph-space mapping, padding carries the glyph index. Vertex-stream
         /// backend and rotated leaves keep the native ghost fallback for now.
         /// </summary>
-        int EmitCurveQuads(NGraphics graphics, Matrix4x4 m, List<QuadInstance> dst)
+        int EmitCurveQuads(NGraphics graphics, Matrix4x4 m, List<QuadInstance> dst, uint extraFlags)
         {
             if (_vertexPath || !(graphics.meshFactory is CurveTextMesh ctm) || ctm.glyphQuads.Count == 0)
                 return 0;
@@ -1011,7 +1046,7 @@ namespace FairyGUI
                     uvA = new Vector4(bb.x, bb.y, bb.z, bb.y),
                     uvB = new Vector4(bb.x, bb.w, bb.z, bb.w),
                     color = col,
-                    flags = QuadInstance.FlagCurveGlyph,
+                    flags = QuadInstance.FlagCurveGlyph | extraFlags,
                     padding = (uint)gq.glyphIndex
                 });
                 n++;
@@ -1125,13 +1160,13 @@ namespace FairyGUI
                 {
                     //analytic leaf: re-emit from the factory parameters (a factory
                     //swap or a border toggling on/off changes the count -> recompile)
-                    rebuilt = EmitSdfQuads(graphics, m, sLeafScratch);
+                    rebuilt = EmitSdfQuads(graphics, m, sLeafScratch, range.flags & QuadInstance.FlagGrayed);
                     if (rebuilt != range.count)
                         return false;
                 }
                 else if (range.curve)
                 {
-                    rebuilt = EmitCurveQuads(graphics, m, sLeafScratch);
+                    rebuilt = EmitCurveQuads(graphics, m, sLeafScratch, range.flags & QuadInstance.FlagGrayed);
                     if (rebuilt != range.count)
                         return false;
                 }

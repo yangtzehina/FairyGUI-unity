@@ -31,10 +31,28 @@ namespace FairyGUI
         /// </summary>
         public Mesh mesh { get; private set; }
 
+        BlendMode _blendMode;
+
         /// <summary>
-        /// 
+        /// Non-Normal blend modes keep the native renderer (the instanced stream's
+        /// blend state is fixed), so changes must push a membership re-evaluation.
+        /// A leaf that was never claimed and later returns to Normal simply stays
+        /// on the native path — correct, just unbatched.
         /// </summary>
-        public BlendMode blendMode;
+        public BlendMode blendMode
+        {
+            get { return _blendMode; }
+            set
+            {
+                if (_blendMode != value)
+                {
+                    _blendMode = value;
+                    var s = _instancedBy != null ? _instancedBy : _lastInstancedBy;
+                    if (s != null)
+                        s._MarkStructureDirty();
+                }
+            }
+        }
 
         /// <summary>
         /// 不参与剪裁

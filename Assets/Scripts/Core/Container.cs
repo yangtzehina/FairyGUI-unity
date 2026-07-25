@@ -690,6 +690,7 @@ namespace FairyGUI
         /// costs one draw call per material run instead of one per element. See MergedBatch
         /// for the rebuild triggers and the elements that keep their own renderer.
         /// </summary>
+        [System.Obsolete("MergedBatch is deprecated: the multi-agent review confirmed 15 defects (7 structural invalidation gaps). Use InstancedUIStream (v4) instead; see docs/review/.")]
         public bool mergedBatching
         {
             get { return _mergedBatch != null; }
@@ -699,6 +700,13 @@ namespace FairyGUI
                 {
                     if (value)
                     {
+                        //mutual exclusion: both mechanisms fight over the same leaf
+                        //renderers via forceRenderingOff (double-render otherwise)
+                        if (_instancedStream != null)
+                        {
+                            UnityEngine.Debug.LogError("mergedBatching cannot be enabled: this container is rendered by an InstancedUIStream.");
+                            return;
+                        }
                         _mergedBatch = new MergedBatch(this);
                         fairyBatching = true;
                     }

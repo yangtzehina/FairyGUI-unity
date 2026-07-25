@@ -72,7 +72,9 @@ Shader "FairyGUI/InstancedUIAttribs"
 
                 int clipIndex = (int)(a.misc.y + 0.5);
                 int flags = (int)(a.misc.z + 0.5);
-                float alphaTex = (flags & 1) != 0 ? 1.0 : 0.0;
+                //packs two per-quad bits: +1 alpha-only texture, +2 grayed
+                float alphaTex = ((flags & 1) != 0 ? 1.0 : 0.0)
+                    + ((flags & 16) != 0 ? 2.0 : 0.0);
 
                 v2f o;
                 float4 world = mul(unity_ObjectToWorld, float4(local, 0.0, 1.0));
@@ -126,9 +128,15 @@ Shader "FairyGUI/InstancedUIAttribs"
                     discard;
 
                 fixed4 tex = tex2D(_MainTex, i.uv);
-                if (i.rawPos.z > 0.5)
+                if (fmod(i.rawPos.z, 2.0) >= 1.0)
                     tex = fixed4(1, 1, 1, tex.a);
                 fixed4 col = i.color * tex;
+                if (i.rawPos.z > 1.5)
+                {
+                    //grayed (flags bit4), same weights as FairyGUI's GRAYED variant
+                    fixed grey = dot(col.rgb, fixed3(0.299, 0.587, 0.114));
+                    col.rgb = fixed3(grey, grey, grey);
+                }
                 if (i.sdfMW.y > 0.5)
                     col.a *= sdfCoverage(i.sdfPos, i.sdfRadii, i.sdfMW);
                 col.a *= softFactor(i.scrolledPos, _ClipRect, _ClipSoft);

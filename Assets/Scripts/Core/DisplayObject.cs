@@ -278,7 +278,16 @@ namespace FairyGUI
         public bool grayed
         {
             get { return _grayed; }
-            set { _grayed = value; }
+            set
+            {
+                if (_grayed != value)
+                {
+                    _grayed = value;
+                    //grayed is baked into instance flags (bit4) and inherits down
+                    //the subtree — a recompile re-evaluates both
+                    InstancedUIStream._NotifyStructure(this);
+                }
+            }
         }
 
         /// <summary>

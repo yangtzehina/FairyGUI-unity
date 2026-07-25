@@ -21,6 +21,15 @@ namespace FairyGUI.Mvvm
         }
 
         /// <summary>
+        /// Clears only the given bits — the Binder passes its flushed snapshot so
+        /// properties written DURING apply callbacks stay dirty (review V1).
+        /// </summary>
+        internal void ClearDirty(ulong mask)
+        {
+            _dirtyMask &= ~mask;
+        }
+
+        /// <summary>
         /// Marks one property dirty. Generated setters call this; call it manually after
         /// mutating collection contents in place.
         /// </summary>

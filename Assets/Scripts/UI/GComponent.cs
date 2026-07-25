@@ -134,10 +134,13 @@ namespace FairyGUI
         /// components the switch must sit on the clip container, not the root -
         /// this property finds that container automatically.
         /// </summary>
+        [System.Obsolete("MergedBatch is deprecated; use InstancedUIStream (v4). See docs/review/.")]
         public bool mergedBatching
         {
+#pragma warning disable 618
             get { return GetMergedBatchingTarget().mergedBatching; }
             set { GetMergedBatchingTarget().mergedBatching = value; }
+#pragma warning restore 618
         }
 
         Container GetMergedBatchingTarget()
