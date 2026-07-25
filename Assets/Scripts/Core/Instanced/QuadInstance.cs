@@ -44,6 +44,11 @@ namespace FairyGUI
         //coordinates — the interpolated uv IS the outline-space position.
         public const uint FlagCurveGlyph = 1u << 3;
 
+        //cross-atlas segments (batch 3d): bits 16-17 select the segment's
+        //texture slot (_MainTex/_Tex1/_Tex2/_Tex3) — stamped by BuildSegments,
+        //re-applied on tier-2 rewrites from LeafRange.texIndexBits
+        public const int TexIndexShift = 16;
+
         //effective grayed state (own OR inherited, mirroring UpdateContext.grayed
         //accumulation); the design doc originally reserved bit1, which M7 took —
         //grayed lives at bit4

@@ -119,5 +119,15 @@ native 像素还原）、transform 槽 t1-t11（首动一次重编译入槽、�
   `AssetDatabase.ImportAsset(..., ForceUpdate)`，否则新 uniform 读到零值（本次 _TransformSlots
   全零导致槽 quad 退化不可见，排查半小时）。
 
-批 3 尾项「跨图集段键」（段键升级为 ≤4 纹理组合 + 实例 texIndex，段数逼近 run 数）未在本次
-范围内，作为后续独立提交。
+## 3d 跨图集段键（尾项，同日落地）
+
+段键从单纹理升级为 ≤4 纹理组合：Segment 带 4 槽纹理集（_MainTex+_Tex1..3），
+BuildSegments 集合未满即并段、quad 拷入时盖 flags bits16-17 texIndex，材质按纹理组合键缓存，
+段转移改集合匹配；双 shader sdfMW 扩为 float3 携带槽号，fragment 分支链选采样器
+（texIndex 逐 quad 常量 → 分支在图元内 uniform，导数合法；GLES3 无动态采样索引问题）。
+tier-2 重写经 LeafRange.texIndexBits 补盖，颜色 tier 天然保位。
+
+验证 10/10：shape+动态字体文本合 1 段、6 纹理正确裂 2 段（4+2）、各槽像素精确、
+等长 churn 保持 tier-2 且槽位不丢、grayed 位共存（0.59 绿亮度）。回归五套件
+19+8+14+19+11 全绿。基准：VirtualList **3 段 → 1 段**，draws 12→10，
+scroll Render 7.2→5.25µs、idle 2.9→2.5µs（段少推送少）。

@@ -150,7 +150,11 @@ namespace FairyGUI
 
         class Segment
         {
-            public Texture texture;
+            //cross-atlas key (batch 3d): a segment carries up to 4 textures
+            //(_MainTex + _Tex1.._Tex3); quads select by flags bits 16-17, so
+            //text/image atlas alternation no longer cuts segments
+            public readonly Texture[] textures = new Texture[MaxSegmentTextures];
+            public int texCount;
             public float z;
             public int start;
             public int count;
@@ -181,6 +185,7 @@ namespace FairyGUI
             public int liveCount; //quads actually in use within the range
             public float bakedAlpha; //context alpha baked into the quads (color tier)
             public uint slotIndex;   //transform slot the quads are baked against
+            public uint texIndexBits; //segment texture-slot bits (flags 16-17)
             public int segIndex;
             public uint flags;
             public uint clipIndex;
@@ -233,7 +238,23 @@ namespace FairyGUI
         Vector4[] _clipRectArr;
         Vector4[] _clipSoftArr;
         bool _clipOverflowWarned;
-        readonly Dictionary<Texture, Material> _materialCache = new Dictionary<Texture, Material>();
+        struct TexSetKey : IEquatable<TexSetKey>
+        {
+            public Texture t0, t1, t2, t3;
+            public bool Equals(TexSetKey o) { return t0 == o.t0 && t1 == o.t1 && t2 == o.t2 && t3 == o.t3; }
+            public override bool Equals(object o) { return o is TexSetKey k && Equals(k); }
+            public override int GetHashCode()
+            {
+                int h = t0 != null ? t0.GetInstanceID() : 0;
+                h = (h * 397) ^ (t1 != null ? t1.GetInstanceID() : 0);
+                h = (h * 397) ^ (t2 != null ? t2.GetInstanceID() : 0);
+                h = (h * 397) ^ (t3 != null ? t3.GetInstanceID() : 0);
+                return h;
+            }
+        }
+
+        public const int MaxSegmentTextures = 4;
+        readonly Dictionary<TexSetKey, Material> _materialCache = new Dictionary<TexSetKey, Material>();
 
         Container _container;
         bool _sortAdjacency;
@@ -687,7 +708,7 @@ namespace FairyGUI
                 {
                     Segment prev = _prevSegments[i];
                     Segment seg = _segments[i];
-                    if (prev.go == null || prev.texture != seg.texture)
+                    if (prev.go == null || !SameTextureSet(prev, seg))
                         continue;
                     seg.go = prev.go;
                     seg.filter = prev.filter;
@@ -712,12 +733,16 @@ namespace FairyGUI
                 foreach (var seg in _segments)
                 {
                     Material mat;
-                    if (!_materialCache.TryGetValue(seg.texture, out mat))
+                    var texKey = new TexSetKey { t0 = seg.textures[0], t1 = seg.textures[1], t2 = seg.textures[2], t3 = seg.textures[3] };
+                    if (!_materialCache.TryGetValue(texKey, out mat))
                     {
                         mat = new Material(_shader);
                         mat.hideFlags = HideFlags.DontSave;
-                        mat.mainTexture = seg.texture;
-                        _materialCache.Add(seg.texture, mat);
+                        mat.mainTexture = seg.textures[0];
+                        if (seg.textures[1] != null) mat.SetTexture("_Tex1", seg.textures[1]);
+                        if (seg.textures[2] != null) mat.SetTexture("_Tex2", seg.textures[2]);
+                        if (seg.textures[3] != null) mat.SetTexture("_Tex3", seg.textures[3]);
+                        _materialCache.Add(texKey, mat);
                     }
                     seg.material = mat;
                     if (seg.go == null)
@@ -774,7 +799,9 @@ namespace FairyGUI
                 _mpbPool.Add(seg.props);
                 seg.props = null;
             }
-            seg.texture = null;
+            for (int i = 0; i < MaxSegmentTextures; i++)
+                seg.textures[i] = null;
+            seg.texCount = 0;
             seg.material = null;
             _segmentObjPool.Add(seg);
         }
@@ -791,6 +818,27 @@ namespace FairyGUI
             seg.dirtyMin = int.MaxValue;
             seg.dirtyMax = -1;
             return seg;
+        }
+
+        static int IndexOfOrAddTexture(Segment seg, Texture tex)
+        {
+            for (int i = 0; i < seg.texCount; i++)
+                if (seg.textures[i] == tex)
+                    return i;
+            if (seg.texCount >= MaxSegmentTextures)
+                return -1;
+            seg.textures[seg.texCount] = tex;
+            return seg.texCount++;
+        }
+
+        static bool SameTextureSet(Segment a, Segment b)
+        {
+            if (a.texCount != b.texCount)
+                return false;
+            for (int i = 0; i < a.texCount; i++)
+                if (a.textures[i] != b.textures[i])
+                    return false;
+            return true;
         }
 
         const MeshUpdateFlags kNoMeshChecks = MeshUpdateFlags.DontRecalculateBounds
@@ -1406,16 +1454,18 @@ namespace FairyGUI
                     continue;
                 }
 
-                if (seg == null || seg.texture != leaf.texture)
+                int texIdx = seg != null ? IndexOfOrAddTexture(seg, leaf.texture) : -1;
+                if (texIdx < 0)
                 {
                     seg = TakeSegment();
-                    seg.texture = leaf.texture;
                     seg.z = -0.5f * _segments.Count;
                     seg.start = _quads.Count;
                     seg.count = 0;
                     seg.runIndex = runIndex;
                     _segments.Add(seg);
+                    texIdx = IndexOfOrAddTexture(seg, leaf.texture);
                 }
+                uint texBits = (uint)texIdx << QuadInstance.TexIndexShift;
 
                 var range = new LeafRange
                 {
@@ -1425,6 +1475,7 @@ namespace FairyGUI
                     liveCount = leaf.stageCount,
                     bakedAlpha = leaf.bakeAlpha,
                     slotIndex = leaf.slotIndex,
+                    texIndexBits = texBits,
                     segIndex = _segments.Count - 1,
                     flags = leaf.flags,
                     clipIndex = leaf.clipIndex,
@@ -1432,7 +1483,11 @@ namespace FairyGUI
                     curve = leaf.curve
                 };
                 for (int q = 0; q < leaf.stageCount; q++)
-                    _quads.Add(_staging[leaf.stageStart + q]);
+                {
+                    QuadInstance qi = _staging[leaf.stageStart + q];
+                    qi.flags |= texBits;
+                    _quads.Add(qi);
+                }
                 seg.count = _quads.Count - seg.start;
                 _leaves.Add(range);
                 _leafLookup[range.graphics] = range;
@@ -1547,6 +1602,7 @@ namespace FairyGUI
                     QuadInstance q = i < rebuilt ? sLeafScratch[i] : default;
                     q.clipIndex = range.clipIndex;
                     q.transformIndex = range.slotIndex;
+                    q.flags |= range.texIndexBits;
                     _quads[range.start + i] = q;
                     _uploadArray[range.start + i] = q;
                     if (_vertexPath)

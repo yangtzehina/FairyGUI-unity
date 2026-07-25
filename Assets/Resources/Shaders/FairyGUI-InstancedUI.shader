@@ -21,6 +21,9 @@ Shader "FairyGUI/InstancedUI"
     Properties
     {
         _MainTex ("Texture", 2D) = "white" {}
+        _Tex1 ("Texture slot 1", 2D) = "white" {}
+        _Tex2 ("Texture slot 2", 2D) = "white" {}
+        _Tex3 ("Texture slot 3", 2D) = "white" {}
     }
     SubShader
     {
@@ -76,6 +79,11 @@ Shader "FairyGUI/InstancedUI"
             float4 _ClipRect;      //external window: xMin yMin xMax yMax
             float4 _ClipSoft;      //external window softness px toward min/max edges
             sampler2D _MainTex;
+            //cross-atlas segments (batch 3d): up to 4 textures per segment,
+            //selected per quad by flags bits 16-17 (sdfMW.z carries the index)
+            sampler2D _Tex1;
+            sampler2D _Tex2;
+            sampler2D _Tex3;
 
             struct v2f
             {
@@ -87,7 +95,7 @@ Shader "FairyGUI/InstancedUI"
                 float4 clipSoft : TEXCOORD4;
                 float4 sdfPos : TEXCOORD5;   //xy = quad-local pos px, zw = half size
                 float4 sdfRadii : TEXCOORD6; //corner radii px: BL BR TL TR
-                float2 sdfMW : TEXCOORD7;    //x = border width px, y = mode (0/1 fill/2 border)
+                float3 sdfMW : TEXCOORD7;    //x = border width px, y = mode, z = texture slot
                 fixed4 color : COLOR;
             };
 
@@ -131,7 +139,8 @@ Shader "FairyGUI/InstancedUI"
                 float mode = (d.flags & 2u) != 0u ? 1.0 : ((d.flags & 4u) != 0u ? 2.0
                     : ((d.flags & 8u) != 0u ? 3.0 : 0.0));
                 //mode 3 (curve glyph): x carries the glyph index instead of a width
-                o.sdfMW = float2(mode == 3.0 ? d.padding : ((d.flags >> 8) & 0xFFu), mode);
+                o.sdfMW = float3(mode == 3.0 ? d.padding : ((d.flags >> 8) & 0xFFu), mode,
+                    (d.flags >> 16) & 3u);
                 o.color = d.color;
                 return o;
             }
@@ -246,7 +255,18 @@ Shader "FairyGUI/InstancedUI"
                     i.rawPos.x > i.clipRect.z || i.rawPos.y > i.clipRect.w)
                     discard;
 
-                fixed4 tex = tex2D(_MainTex, i.uv);
+                //branch is uniform across the quad (texIndex is per-quad constant),
+                //so derivatives inside tex2D stay valid
+                int texSlot = (int)(i.sdfMW.z + 0.5);
+                fixed4 tex;
+                if (texSlot == 0)
+                    tex = tex2D(_MainTex, i.uv);
+                else if (texSlot == 1)
+                    tex = tex2D(_Tex1, i.uv);
+                else if (texSlot == 2)
+                    tex = tex2D(_Tex2, i.uv);
+                else
+                    tex = tex2D(_Tex3, i.uv);
                 if (fmod(i.rawPos.z, 2.0) >= 1.0)
                     tex = fixed4(1, 1, 1, tex.a);
                 fixed4 col = i.color * tex;
