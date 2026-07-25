@@ -102,6 +102,11 @@ namespace FairyGUI
         //renderer. The mark lives on the LEAF: dispose/reparent clears it from the
         //leaf side so recovery never depends on the batch's lifecycle.
         internal InstancedUIStream _instancedBy;
+        //color tier (batch 3): claimed leaves defer native mesh color rewrites
+        //(the renderer is off; the stream pushes instance colors directly);
+        //_RestoreNativeColors settles the debt on release
+        internal bool _colorStale;
+        internal bool _tintStale;
         //kept after release so re-admission conditions (enabled=true) can still
         //reach a stream; stale marks only cost one redundant recompile
         internal InstancedUIStream _lastInstancedBy;
@@ -117,12 +122,44 @@ namespace FairyGUI
         internal void _ClearInstancedOwner()
         {
             _instancedBy = null;
+            _RestoreNativeColors();
             if (meshRenderer != null)
             {
                 meshRenderer.forceRenderingOff = false;
                 //resync the native sortingOrder skipped while claimed
                 meshRenderer.sortingOrder = _renderingOrder;
             }
+        }
+
+        /// <summary>
+        /// Settles color writes deferred while the leaf was claimed (color tier,
+        /// batch 3): reapplies the native formula col.a = alpha * backup — plus
+        /// rgb = color when a Tint was deferred — so the mesh is correct the
+        /// moment native rendering resumes or the stream re-reads it.
+        /// </summary>
+        internal void _RestoreNativeColors()
+        {
+            if (!_colorStale)
+                return;
+            bool tint = _tintStale;
+            _colorStale = _tintStale = false;
+            if (_meshDirty || mesh == null)
+                return; //the pending rebuild bakes fresh colors anyway
+
+            int vertCount = mesh.vertexCount;
+            if (vertCount == 0)
+                return;
+            VertexBuffer vb = VertexBuffer.Begin();
+            mesh.GetColors(vb.colors);
+            List<Color32> colors = vb.colors;
+            for (int i = 0; i < vertCount; i++)
+            {
+                Color32 col = tint ? (Color32)_color : colors[i];
+                col.a = (byte)(_alpha * (hasAlphaBackup ? _alphaBackup[i] : (byte)255));
+                colors[i] = col;
+            }
+            mesh.SetColors(vb.colors);
+            vb.End();
         }
 
         internal bool hasPropertyBlock
@@ -508,6 +545,15 @@ namespace FairyGUI
             if (_meshDirty)
                 return;
 
+            if (_instancedBy != null)
+            {
+                //color tier (batch 3): skip the native vertex rewrite
+                _colorStale = _tintStale = true;
+                _contentVersion++;
+                _instancedBy._QueueLeafColor(this);
+                return;
+            }
+
             int vertCount = mesh.vertexCount;
             if (vertCount == 0)
                 return;
@@ -534,6 +580,15 @@ namespace FairyGUI
         void ChangeAlpha(float value)
         {
             _alpha = value;
+
+            if (_instancedBy != null)
+            {
+                //color tier (batch 3): skip the native vertex rewrite
+                _colorStale = true;
+                _contentVersion++;
+                _instancedBy._QueueLeafColor(this);
+                return;
+            }
 
             int vertCount = mesh.vertexCount;
             if (vertCount == 0)
@@ -830,6 +885,7 @@ namespace FairyGUI
         void UpdateMeshNow()
         {
             _meshDirty = false;
+            _colorStale = _tintStale = false; //rebuild bakes colors fresh
             _contentVersion++;
             if (_instancedBy != null)
                 _instancedBy._QueueLeafUpdate(this);

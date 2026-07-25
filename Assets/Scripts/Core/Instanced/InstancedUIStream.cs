@@ -123,7 +123,7 @@ namespace FairyGUI
                 {
                     if (p._instancedStream != null)
                     {
-                        p._instancedStream._structureDirty = true;
+                        p._instancedStream._OnInteriorContainerMoved(c);
                         return;
                     }
                 }
@@ -165,6 +165,7 @@ namespace FairyGUI
             public MeshFilter filter;
             public MeshRenderer renderer;
             public Mesh mesh; //vertex path only: per-segment mesh with baked QuadVertex data
+            public int meshQuadCap = -1; //quad count the mesh's params/indices are laid out for
             public int lastSortingOrder = int.MinValue;
             public int lastLayer = -1;
             //deferred tier-2 uploads coalesce into one range per segment (batch 2)
@@ -178,6 +179,8 @@ namespace FairyGUI
             public int start;
             public int count;     //reserved range (text leaves include slack)
             public int liveCount; //quads actually in use within the range
+            public float bakedAlpha; //context alpha baked into the quads (color tier)
+            public uint slotIndex;   //transform slot the quads are baked against
             public int segIndex;
             public uint flags;
             public uint clipIndex;
@@ -196,6 +199,8 @@ namespace FairyGUI
             public bool instanceable; //false: non-quad topology -> native fallback
             public bool sdf;          //M7: quads carry analytic SDF coverage
             public bool curve;        //M9b: quads are curve-text glyphs
+            public float bakeAlpha;   //graphics alpha at stage time (color tier)
+            public uint slotIndex;    //transform slot the quads are baked against
         }
 
         readonly List<Segment> _segments = new List<Segment>();
@@ -213,6 +218,13 @@ namespace FairyGUI
         readonly List<NGraphics> _runBarriers = new List<NGraphics>();
         readonly List<GameObject> _segmentPool = new List<GameObject>();
         readonly List<Mesh> _meshPool = new List<Mesh>();
+        //batch 3: recompiles reuse instead of reallocate — prior segments transfer
+        //their renderer/MPB/mesh in place when the texture layout matches by index
+        readonly List<Segment> _prevSegments = new List<Segment>();
+        readonly List<Segment> _segmentObjPool = new List<Segment>();
+        readonly List<MaterialPropertyBlock> _mpbPool = new List<MaterialPropertyBlock>();
+        int _bufferCapacity;
+        int _clipBufferCapacity;
         readonly List<int> _runOrderScratch = new List<int>();
         Mesh _pullMesh;
         int _pullCapacity;
@@ -229,6 +241,9 @@ namespace FairyGUI
         bool _structureDirty;
         readonly List<NGraphics> _dirtyLeaves = new List<NGraphics>();
         readonly HashSet<NGraphics> _dirtyLeafSet = new HashSet<NGraphics>();
+        //color tier (batch 3): alpha/tint-only changes touch just the color field
+        readonly List<NGraphics> _colorLeaves = new List<NGraphics>();
+        readonly HashSet<NGraphics> _colorLeafSet = new HashSet<NGraphics>();
         HashSet<NGraphics> _claimed = new HashSet<NGraphics>();
         HashSet<NGraphics> _claimScratch = new HashSet<NGraphics>();
         readonly HashSet<NTexture> _watchedTextures = new HashSet<NTexture>();
@@ -251,6 +266,31 @@ namespace FairyGUI
         Vector2 _drawOffset;
         int _skippedPairs;
         int _maskedSubtrees;
+        //transform slots (batch 3, design §4.2 tier 1): interior containers that
+        //keep moving get promoted to a slot — their subtree quads are baked in
+        //SLOT-local space and the shader multiplies by the slot matrix, so a
+        //container tween/interior scroll is a matrix write, not a recompile.
+        //Adaptive: the FIRST move of a container recompiles and marks it hot,
+        //the recompile assigns it a slot, every later move is tier 1.
+        public const int MaxTransformSlots = 16; //index 0 = identity
+        readonly Dictionary<Container, int> _slotIndices = new Dictionary<Container, int>();
+        readonly Container[] _slotOwners = new Container[MaxTransformSlots];
+        readonly Matrix4x4[] _slotMatrixArr = new Matrix4x4[MaxTransformSlots];
+        readonly Dictionary<Container, int> _hotContainers = new Dictionary<Container, int>();
+        static readonly List<Container> sHotScratch = new List<Container>();
+        bool _slotsDirty;
+        bool _hasSlottedClips;
+        Matrix4x4 _rootWorldToLocal;
+        //internal clip metadata for slot-aware recompute: entry i's rect can be
+        //re-derived from its owner's CURRENT transform when a slot moves
+        struct ClipMeta
+        {
+            public Container owner;
+            public Rect rect;
+            public uint parentIndex;
+            public uint slotIndex;
+        }
+        readonly List<ClipMeta> _clipMeta = new List<ClipMeta>();
 
         static readonly List<Vector3> sVerts = new List<Vector3>();
         static readonly List<Vector2> sUVs = new List<Vector2>();
@@ -266,6 +306,15 @@ namespace FairyGUI
 #endif
 
         public int segmentCount { get { return _segments.Count; } }
+
+        /// <summary>Validation/diagnostics probe: full recompiles since construction.</summary>
+        public int extractCount { get; private set; }
+
+        /// <summary>Transform slots currently assigned (hot interior containers).</summary>
+        public int slotCount { get { return _slotIndices.Count; } }
+
+        /// <summary>Hot containers that could not get a slot in the last Extract (>15).</summary>
+        public int slotOverflow { get; private set; }
         public int quadCount { get { return _quads.Count; } }
 
         /// <summary>
@@ -323,6 +372,30 @@ namespace FairyGUI
                 _dirtyLeaves.Add(graphics);
         }
 
+        /// <summary>Color tier consumer (batch 3): alpha/tint rewrite on next Flush.</summary>
+        internal void _QueueLeafColor(NGraphics graphics)
+        {
+            if (_colorLeafSet.Add(graphics))
+                _colorLeaves.Add(graphics);
+        }
+
+        /// <summary>
+        /// Transform channel, interior container: slotted containers take tier 1
+        /// (matrix write); everything else recompiles — and in in-place mode the
+        /// container is marked hot so the recompile promotes it to a slot.
+        /// </summary>
+        internal void _OnInteriorContainerMoved(Container c)
+        {
+            if (_slotIndices.ContainsKey(c))
+            {
+                _slotsDirty = true;
+                return;
+            }
+            if (_inPlace)
+                _hotContainers[c] = Time.frameCount;
+            _structureDirty = true;
+        }
+
         void OnWatchedTextureChanged(NTexture texture)
         {
             //sub-atlas movement / atlas rebuild: segment textures are stale
@@ -342,11 +415,13 @@ namespace FairyGUI
                 _structureDirty = false;
                 _dirtyLeaves.Clear();
                 _dirtyLeafSet.Clear();
+                _colorLeaves.Clear();
+                _colorLeafSet.Clear();
                 Extract();
                 return;
             }
 
-            if (_dirtyLeaves.Count > 0)
+            if (_dirtyLeaves.Count > 0 || _colorLeaves.Count > 0)
             {
                 for (int i = 0; i < _dirtyLeaves.Count; i++)
                 {
@@ -356,10 +431,21 @@ namespace FairyGUI
                     if (!UpdateLeaf(g, true))
                         _structureDirty = true;
                 }
+                for (int i = 0; i < _colorLeaves.Count; i++)
+                {
+                    NGraphics g = _colorLeaves[i];
+                    if (_inPlace && g._instancedBy != this)
+                        continue;
+                    if (_dirtyLeafSet.Contains(g))
+                        continue; //the full rewrite above already re-baked colors
+                    UpdateLeafColor(g);
+                }
                 //one coalesced upload per touched segment instead of one per leaf
                 UploadAllDirtyRanges();
                 _dirtyLeaves.Clear();
                 _dirtyLeafSet.Clear();
+                _colorLeaves.Clear();
+                _colorLeafSet.Clear();
                 if (_structureDirty)
                 {
                     _structureDirty = false;
@@ -475,8 +561,11 @@ namespace FairyGUI
             using (sExtract.Auto())
 #endif
             {
-                foreach (var seg in _segments)
-                    ReleaseSegmentRenderer(seg);
+                extractCount++;
+                //batch 3: same-shape recompiles transfer renderers in place
+                //instead of the SetParent/SetActive round trip through the pool
+                _prevSegments.Clear();
+                _prevSegments.AddRange(_segments);
                 _segments.Clear();
                 _leaves.Clear();
                 _leafLookup.Clear();
@@ -494,8 +583,26 @@ namespace FairyGUI
                     t.onSizeChanged -= _onWatchedTexture;
                 _watchedTextures.Clear();
 
-                Matrix4x4 worldToLocal = _container.cachedTransform.worldToLocalMatrix;
-                ExtractContainer(_container, worldToLocal, 0, _container.grayed);
+                _rootWorldToLocal = _container.cachedTransform.worldToLocalMatrix;
+                _clipMeta.Clear();
+                _clipMeta.Add(default);
+                _slotIndices.Clear();
+                for (int i = 0; i < MaxTransformSlots; i++)
+                    _slotOwners[i] = null;
+                slotOverflow = 0;
+                _hasSlottedClips = false;
+                if (_hotContainers.Count > 0)
+                {
+                    //hot containers that stopped moving (or died) age out
+                    sHotScratch.Clear();
+                    foreach (var kv in _hotContainers)
+                        if (kv.Key.isDisposed || Time.frameCount - kv.Value > 3000)
+                            sHotScratch.Add(kv.Key);
+                    foreach (var c in sHotScratch)
+                        _hotContainers.Remove(c);
+                }
+
+                ExtractContainer(_container, _rootWorldToLocal, 0, _container.grayed, 0);
 
                 if (_sortAdjacency)
                     AdjacencySorter.Sort(_entries);
@@ -525,34 +632,47 @@ namespace FairyGUI
                     _claimScratch = tmp;
                 }
 
-                if (_buffer != null)
-                    _buffer.Release();
-                _buffer = null;
-                if (_clipBuffer != null)
-                    _clipBuffer.Release();
-                _clipBuffer = null;
-                _vertexUpload = null;
                 if (_quads.Count == 0)
+                {
+                    for (int i = 0; i < _prevSegments.Count; i++)
+                        RecycleSegment(_prevSegments[i]);
+                    _prevSegments.Clear();
                     return;
+                }
 
+                EnsureUploadCapacity(_quads.Count);
+                _quads.CopyTo(_uploadArray);
                 if (_vertexPath)
                 {
                     //vertex-stream backend: instance data baked x4 into per-segment
                     //mesh vertices; no compute buffers anywhere
-                    _uploadArray = _quads.ToArray();
-                    _vertexUpload = new QuadVertex[_quads.Count * 4];
-                    for (int i = 0; i < _uploadArray.Length; i++)
+                    for (int i = 0; i < _quads.Count; i++)
                         QuadVertex.WriteQuad(_vertexUpload, i, in _uploadArray[i]);
                 }
                 else
                 {
-                    _uploadArray = _quads.ToArray();
-                    _buffer = new ComputeBuffer(_uploadArray.Length, QuadInstance.Stride, ComputeBufferType.Structured);
-                    _buffer.SetData(_uploadArray);
+                    //capacity-grown, never shrunk: segments read only within
+                    //_InstanceStart/Count, so a larger buffer is harmless
+                    if (_buffer == null || _bufferCapacity < _quads.Count)
+                    {
+                        if (_buffer != null)
+                            _buffer.Release();
+                        _bufferCapacity = Mathf.NextPowerOfTwo(Mathf.Max(_quads.Count, 256));
+                        _buffer = new ComputeBuffer(_bufferCapacity, QuadInstance.Stride, ComputeBufferType.Structured);
+                    }
+                    _buffer.SetData(_uploadArray, 0, 0, _quads.Count);
 
-                    _clipUploadArray = _clipEntries.ToArray();
-                    _clipBuffer = new ComputeBuffer(_clipUploadArray.Length, ClipEntry.Stride, ComputeBufferType.Structured);
-                    _clipBuffer.SetData(_clipUploadArray);
+                    if (_clipUploadArray == null || _clipUploadArray.Length < _clipEntries.Count)
+                        _clipUploadArray = new ClipEntry[Mathf.NextPowerOfTwo(Mathf.Max(_clipEntries.Count, 16))];
+                    _clipEntries.CopyTo(_clipUploadArray);
+                    if (_clipBuffer == null || _clipBufferCapacity < _clipEntries.Count)
+                    {
+                        if (_clipBuffer != null)
+                            _clipBuffer.Release();
+                        _clipBufferCapacity = Mathf.NextPowerOfTwo(Mathf.Max(_clipEntries.Count, 16));
+                        _clipBuffer = new ComputeBuffer(_clipBufferCapacity, ClipEntry.Stride, ComputeBufferType.Structured);
+                    }
+                    _clipBuffer.SetData(_clipUploadArray, 0, 0, _clipEntries.Count);
 
                     int maxCount = 0;
                     foreach (var seg in _segments)
@@ -560,6 +680,35 @@ namespace FairyGUI
                     EnsurePullMesh(maxCount);
                 }
 
+                //pass 1: transfer renderers where the texture layout matches by
+                //index (z is index-derived, so the transform needs no touch)
+                int transferable = Mathf.Min(_prevSegments.Count, _segments.Count);
+                for (int i = 0; i < transferable; i++)
+                {
+                    Segment prev = _prevSegments[i];
+                    Segment seg = _segments[i];
+                    if (prev.go == null || prev.texture != seg.texture)
+                        continue;
+                    seg.go = prev.go;
+                    seg.filter = prev.filter;
+                    seg.renderer = prev.renderer;
+                    seg.mesh = prev.mesh;
+                    seg.props = prev.props;
+                    seg.meshQuadCap = prev.meshQuadCap;
+                    seg.lastSortingOrder = prev.lastSortingOrder;
+                    seg.lastLayer = prev.lastLayer;
+                    prev.go = null;
+                    prev.filter = null;
+                    prev.renderer = null;
+                    prev.mesh = null;
+                    prev.props = null;
+                }
+                //pass 2: unconsumed old segments feed the pools before new claims
+                for (int i = 0; i < _prevSegments.Count; i++)
+                    RecycleSegment(_prevSegments[i]);
+                _prevSegments.Clear();
+
+                //pass 3: resolve materials, claim what did not transfer, upload
                 foreach (var seg in _segments)
                 {
                     Material mat;
@@ -571,8 +720,20 @@ namespace FairyGUI
                         _materialCache.Add(seg.texture, mat);
                     }
                     seg.material = mat;
-                    ClaimSegmentRenderer(seg);
-                    seg.props = new MaterialPropertyBlock();
+                    if (seg.go == null)
+                    {
+                        ClaimSegmentRenderer(seg);
+                        if (_mpbPool.Count > 0)
+                        {
+                            seg.props = _mpbPool[_mpbPool.Count - 1];
+                            _mpbPool.RemoveAt(_mpbPool.Count - 1);
+                        }
+                        else
+                            seg.props = new MaterialPropertyBlock();
+                    }
+                    else if (seg.renderer.sharedMaterial != mat)
+                        seg.renderer.sharedMaterial = mat;
+
                     if (_vertexPath)
                     {
                         UploadSegmentMesh(seg);
@@ -589,9 +750,47 @@ namespace FairyGUI
 
                 //fresh property blocks need the shared uniforms pushed once; run
                 //orders and curve-font bindings re-evaluate after a recompile
+                RecomputeSlotMatrices();
+                _slotsDirty = false;
                 _propsDirty = true;
                 _lastRunOrderProbe = int.MinValue;
             }
+        }
+
+        void EnsureUploadCapacity(int quadCount)
+        {
+            if (_uploadArray == null || _uploadArray.Length < quadCount)
+                _uploadArray = new QuadInstance[Mathf.NextPowerOfTwo(Mathf.Max(quadCount, 256))];
+            if (_vertexPath && (_vertexUpload == null || _vertexUpload.Length < quadCount * 4))
+                _vertexUpload = new QuadVertex[Mathf.NextPowerOfTwo(Mathf.Max(quadCount, 256)) * 4];
+        }
+
+        void RecycleSegment(Segment seg)
+        {
+            ReleaseSegmentRenderer(seg);
+            if (seg.props != null)
+            {
+                seg.props.Clear();
+                _mpbPool.Add(seg.props);
+                seg.props = null;
+            }
+            seg.texture = null;
+            seg.material = null;
+            _segmentObjPool.Add(seg);
+        }
+
+        Segment TakeSegment()
+        {
+            if (_segmentObjPool.Count == 0)
+                return new Segment();
+            Segment seg = _segmentObjPool[_segmentObjPool.Count - 1];
+            _segmentObjPool.RemoveAt(_segmentObjPool.Count - 1);
+            seg.meshQuadCap = -1;
+            seg.lastSortingOrder = int.MinValue;
+            seg.lastLayer = -1;
+            seg.dirtyMin = int.MaxValue;
+            seg.dirtyMax = -1;
+            return seg;
         }
 
         const MeshUpdateFlags kNoMeshChecks = MeshUpdateFlags.DontRecalculateBounds
@@ -606,6 +805,13 @@ namespace FairyGUI
         void UploadSegmentMesh(Segment seg)
         {
             Mesh mesh = seg.mesh;
+            if (seg.meshQuadCap == seg.count)
+            {
+                //same layout: params, index buffer and submesh already fit —
+                //only the vertex payload changes
+                mesh.SetVertexBufferData(_vertexUpload, seg.start * 4, 0, seg.count * 4, 0, kNoMeshChecks);
+                return;
+            }
             mesh.SetVertexBufferParams(seg.count * 4, QuadVertex.Layout);
             mesh.SetVertexBufferData(_vertexUpload, seg.start * 4, 0, seg.count * 4, 0, kNoMeshChecks);
             EnsureIndexCache(seg.count);
@@ -614,6 +820,7 @@ namespace FairyGUI
             mesh.subMeshCount = 1;
             mesh.SetSubMesh(0, new SubMeshDescriptor(0, seg.count * 6), kNoMeshChecks);
             mesh.bounds = new Bounds(Vector3.zero, new Vector3(1e6f, 1e6f, 1e6f));
+            seg.meshQuadCap = seg.count;
         }
 
         /// <summary>
@@ -692,6 +899,7 @@ namespace FairyGUI
                     seg.mesh.MarkDynamic();
                 }
                 seg.filter.sharedMesh = seg.mesh;
+                seg.meshQuadCap = -1; //pooled mesh: layout unknown, force full upload
             }
             else
                 seg.filter.sharedMesh = _pullMesh;
@@ -726,7 +934,7 @@ namespace FairyGUI
             seg.renderer = null;
         }
 
-        void ExtractContainer(Container container, Matrix4x4 worldToLocal, uint clipIndex, bool grayed)
+        void ExtractContainer(Container container, Matrix4x4 worldToLocal, uint clipIndex, bool grayed, uint slotIndex)
         {
             int cnt = container.numChildren;
             for (int i = 0; i < cnt; i++)
@@ -747,13 +955,13 @@ namespace FairyGUI
                 }
 
                 if (child.graphics != null && child.graphics.texture != null)
-                    ExtractLeaf(child.graphics, worldToLocal, clipIndex, childGrayed);
+                    ExtractLeaf(child.graphics, worldToLocal, clipIndex, childGrayed, slotIndex);
 
                 if (child.graphics != null && child.graphics.subInstances != null)
                 {
                     foreach (var sub in child.graphics.subInstances)
                         if (sub.texture != null)
-                            ExtractLeaf(sub, worldToLocal, clipIndex, childGrayed);
+                            ExtractLeaf(sub, worldToLocal, clipIndex, childGrayed, slotIndex);
                 }
 
                 if (child is Container c)
@@ -764,11 +972,93 @@ namespace FairyGUI
                         _maskedSubtrees++;
                         continue;
                     }
+                    //slot promotion BEFORE the clip push: a moving clip owner's
+                    //window must ride its own slot
+                    uint childSlot = slotIndex;
+                    Matrix4x4 childW2L = worldToLocal;
+                    if (_inPlace && _hotContainers.ContainsKey(c))
+                        TryPromoteSlot(c, ref childSlot, ref childW2L);
                     uint childClip = clipIndex;
                     if (c.clipRect != null)
-                        childClip = PushClip(c, worldToLocal, clipIndex);
-                    ExtractContainer(c, worldToLocal, childClip, childGrayed);
+                        childClip = PushClip(c, clipIndex, childSlot);
+                    ExtractContainer(c, childW2L, childClip, childGrayed, childSlot);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Assigns (or reuses) a transform slot for a hot container: its subtree
+        /// bakes in the container's own local space from here on.
+        /// </summary>
+        void TryPromoteSlot(Container c, ref uint slotIndex, ref Matrix4x4 worldToLocal)
+        {
+            int idx;
+            if (!_slotIndices.TryGetValue(c, out idx))
+            {
+                idx = -1;
+                for (int i = 1; i < MaxTransformSlots; i++)
+                {
+                    if (_slotOwners[i] == null)
+                    {
+                        idx = i;
+                        break;
+                    }
+                }
+                if (idx < 0)
+                {
+                    slotOverflow++;
+                    return; //no slot left: stays recompile-on-move
+                }
+                _slotIndices[c] = idx;
+                _slotOwners[idx] = c;
+            }
+            slotIndex = (uint)idx;
+            worldToLocal = c.cachedTransform.worldToLocalMatrix;
+        }
+
+        /// <summary>
+        /// Slot matrices map slot-local quads back to CURRENT stream-root space:
+        /// M = root.worldToLocal x owner.localToWorld, exact at bake time and
+        /// re-derived from the live transforms whenever a slot moves.
+        /// </summary>
+        void RecomputeSlotMatrices()
+        {
+            Matrix4x4 rootW2L = _container.cachedTransform.worldToLocalMatrix;
+            _slotMatrixArr[0] = Matrix4x4.identity;
+            for (int i = 1; i < MaxTransformSlots; i++)
+            {
+                Container owner = _slotOwners[i];
+                _slotMatrixArr[i] = owner == null || owner.isDisposed
+                    ? Matrix4x4.identity
+                    : rootW2L * owner.cachedTransform.localToWorldMatrix;
+            }
+        }
+
+        /// <summary>
+        /// Re-derives the root-space rect of every slot-riding internal clip from
+        /// its owner's CURRENT transform (rotation degrades to the AABB exactly
+        /// like Extract does), refolding with the parent — parents are always
+        /// registered before children, so one in-order pass suffices.
+        /// </summary>
+        void RecomputeSlottedClips()
+        {
+            Matrix4x4 rootW2L = _container.cachedTransform.worldToLocalMatrix;
+            for (int i = 1; i < _clipEntries.Count && i < _clipMeta.Count; i++)
+            {
+                ClipMeta meta = _clipMeta[i];
+                if (meta.slotIndex == 0 || meta.owner == null || meta.owner.isDisposed)
+                    continue;
+                Matrix4x4 m = rootW2L * meta.owner.cachedTransform.localToWorldMatrix;
+                Vector4 rect = TransformClipRect(meta.rect, m);
+                if (meta.parentIndex != 0)
+                {
+                    Vector4 pr = _clipEntries[(int)meta.parentIndex].rect;
+                    rect = new Vector4(Mathf.Max(rect.x, pr.x), Mathf.Max(rect.y, pr.y),
+                        Mathf.Min(rect.z, pr.z), Mathf.Min(rect.w, pr.w));
+                }
+                ClipEntry e = _clipEntries[i];
+                e.rect = rect;
+                _clipEntries[i] = e;
             }
         }
 
@@ -777,10 +1067,14 @@ namespace FairyGUI
         /// stream-local space, folded (intersected) with the enclosing region — same
         /// semantics as UpdateContext.EnterClipping. Identical regions are deduped.
         /// </summary>
-        uint PushClip(Container c, Matrix4x4 worldToLocal, uint parentIndex)
+        uint PushClip(Container c, uint parentIndex, uint slotIndex)
         {
-            Matrix4x4 m = worldToLocal * c.cachedTransform.localToWorldMatrix;
-            Vector4 rect = TransformClipRect((Rect)c.clipRect, m);
+            //the ENTRY rect is always root-space (the shader's clip test runs on
+            //slot-transformed positions); at extract time the slot matrix is the
+            //live transform, so the root-relative matrix bakes the same value
+            Rect clipRect = (Rect)c.clipRect;
+            Matrix4x4 m = _rootWorldToLocal * c.cachedTransform.localToWorldMatrix;
+            Vector4 rect = TransformClipRect(clipRect, m);
 
             if (parentIndex != 0)
             {
@@ -798,7 +1092,11 @@ namespace FairyGUI
 
             for (int i = 1; i < _clipEntries.Count; i++)
             {
-                if (_clipEntries[i].rect == rect && _clipEntries[i].soft == soft)
+                //slot-riding entries only dedup within the same slot: same slot
+                //means the merged owners move together (diverging owners fire the
+                //structure channel and recompile)
+                if (_clipEntries[i].rect == rect && _clipEntries[i].soft == soft
+                    && _clipMeta[i].slotIndex == slotIndex)
                     return (uint)i;
             }
 
@@ -816,10 +1114,13 @@ namespace FairyGUI
             }
 
             _clipEntries.Add(new ClipEntry { rect = rect, soft = soft });
+            _clipMeta.Add(new ClipMeta { owner = c, rect = clipRect, parentIndex = parentIndex, slotIndex = slotIndex });
+            if (slotIndex != 0)
+                _hasSlottedClips = true;
             return (uint)(_clipEntries.Count - 1);
         }
 
-        void ExtractLeaf(NGraphics graphics, Matrix4x4 worldToLocal, uint clipIndex, bool grayed)
+        void ExtractLeaf(NGraphics graphics, Matrix4x4 worldToLocal, uint clipIndex, bool grayed, uint slotIndex)
         {
             Mesh mesh = graphics.mesh;
             if (mesh == null || mesh.vertexCount == 0)
@@ -827,6 +1128,9 @@ namespace FairyGUI
             //enabled is an admission condition (review M10/M14); its setter pushes
             if (graphics.meshRenderer != null && !graphics.meshRenderer.enabled)
                 return;
+            //color tier (batch 3): deferred alpha/tint must land in the mesh
+            //before the quads are staged from it
+            graphics._RestoreNativeColors();
             Texture tex = graphics.texture.nativeTexture;
             if (tex == null)
                 return;
@@ -842,12 +1146,15 @@ namespace FairyGUI
 
             //stream-local AABB for the overlap test (transform the mesh AABB's
             //4 xy corners so rotated leaves stay conservative), in the same
-            //offset space as the clip entries
+            //offset space as the clip entries — for slot-baked leaves the quads
+            //are slot-local but the SORT still runs in root space
+            Matrix4x4 mb2root = slotIndex == 0 ? m
+                : _rootWorldToLocal * graphics.gameObject.transform.localToWorldMatrix;
             Bounds mb = mesh.bounds;
-            Vector2 c0 = m.MultiplyPoint3x4(new Vector3(mb.min.x, mb.min.y, 0));
-            Vector2 c1 = m.MultiplyPoint3x4(new Vector3(mb.max.x, mb.min.y, 0));
-            Vector2 c2 = m.MultiplyPoint3x4(new Vector3(mb.min.x, mb.max.y, 0));
-            Vector2 c3 = m.MultiplyPoint3x4(new Vector3(mb.max.x, mb.max.y, 0));
+            Vector2 c0 = mb2root.MultiplyPoint3x4(new Vector3(mb.min.x, mb.min.y, 0));
+            Vector2 c1 = mb2root.MultiplyPoint3x4(new Vector3(mb.max.x, mb.min.y, 0));
+            Vector2 c2 = mb2root.MultiplyPoint3x4(new Vector3(mb.min.x, mb.max.y, 0));
+            Vector2 c3 = mb2root.MultiplyPoint3x4(new Vector3(mb.max.x, mb.max.y, 0));
             Vector2 bmin = Vector2.Min(Vector2.Min(c0, c1), Vector2.Min(c2, c3)) + _drawOffset;
             Vector2 bmax = Vector2.Max(Vector2.Max(c0, c1), Vector2.Max(c2, c3)) + _drawOffset;
 
@@ -864,7 +1171,7 @@ namespace FairyGUI
             //fallback barrier: it keeps its native renderer, and a null sort key
             //makes it immovable — others may still sort past it when they do not
             //overlap, exactly the legality rule native FairyBatching uses
-            var p = new PendingLeaf { graphics = graphics, texture = tex, flags = flags, clipIndex = clipIndex, stageStart = _staging.Count };
+            var p = new PendingLeaf { graphics = graphics, texture = tex, flags = flags, clipIndex = clipIndex, stageStart = _staging.Count, bakeAlpha = graphics._currentAlpha, slotIndex = slotIndex };
 
             //non-Normal blend modes cannot join the stream (its blend state is
             //fixed): keep the native renderer, act as a sort barrier (review batch 1)
@@ -889,7 +1196,7 @@ namespace FairyGUI
                 p.stageCount = curveCount;
                 p.instanceable = true;
                 p.curve = true;
-                StampClipIndex(_staging, p.stageStart, p.stageCount, clipIndex);
+                StampIndices(_staging, p.stageStart, p.stageCount, clipIndex, slotIndex);
                 _entries.Add(new AdjacencyEntry
                 {
                     key = tex,
@@ -908,7 +1215,7 @@ namespace FairyGUI
                 p.stageCount = sdfCount;
                 p.instanceable = true;
                 p.sdf = true;
-                StampClipIndex(_staging, p.stageStart, p.stageCount, clipIndex);
+                StampIndices(_staging, p.stageStart, p.stageCount, clipIndex, slotIndex);
             }
             else
             {
@@ -940,7 +1247,7 @@ namespace FairyGUI
                         p.stageCount = slack;
                     }
                     p.instanceable = true;
-                    StampClipIndex(_staging, p.stageStart, p.stageCount, clipIndex);
+                    StampIndices(_staging, p.stageStart, p.stageCount, clipIndex, slotIndex);
                 }
             }
 
@@ -1101,13 +1408,12 @@ namespace FairyGUI
 
                 if (seg == null || seg.texture != leaf.texture)
                 {
-                    seg = new Segment
-                    {
-                        texture = leaf.texture,
-                        z = -0.5f * _segments.Count,
-                        start = _quads.Count,
-                        runIndex = runIndex
-                    };
+                    seg = TakeSegment();
+                    seg.texture = leaf.texture;
+                    seg.z = -0.5f * _segments.Count;
+                    seg.start = _quads.Count;
+                    seg.count = 0;
+                    seg.runIndex = runIndex;
                     _segments.Add(seg);
                 }
 
@@ -1117,6 +1423,8 @@ namespace FairyGUI
                     start = _quads.Count,
                     count = leaf.stageCount,
                     liveCount = leaf.stageCount,
+                    bakedAlpha = leaf.bakeAlpha,
+                    slotIndex = leaf.slotIndex,
                     segIndex = _segments.Count - 1,
                     flags = leaf.flags,
                     clipIndex = leaf.clipIndex,
@@ -1131,14 +1439,15 @@ namespace FairyGUI
             }
         }
 
-        static void StampClipIndex(List<QuadInstance> quads, int start, int count, uint clipIndex)
+        static void StampIndices(List<QuadInstance> quads, int start, int count, uint clipIndex, uint slotIndex)
         {
-            if (clipIndex == 0)
+            if (clipIndex == 0 && slotIndex == 0)
                 return;
             for (int i = start; i < start + count; i++)
             {
                 QuadInstance q = quads[i];
                 q.clipIndex = clipIndex;
+                q.transformIndex = slotIndex;
                 quads[i] = q;
             }
         }
@@ -1180,8 +1489,17 @@ namespace FairyGUI
                 if (mesh == null)
                     return false;
 
-                Matrix4x4 m = _container.cachedTransform.worldToLocalMatrix
-                            * graphics.gameObject.transform.localToWorldMatrix;
+                Matrix4x4 baseW2L;
+                if (range.slotIndex == 0)
+                    baseW2L = _container.cachedTransform.worldToLocalMatrix;
+                else
+                {
+                    Container slotOwner = _slotOwners[range.slotIndex];
+                    if (slotOwner == null || slotOwner.isDisposed)
+                        return false; //slot died: recompile re-bakes in root space
+                    baseW2L = slotOwner.cachedTransform.worldToLocalMatrix;
+                }
+                Matrix4x4 m = baseW2L * graphics.gameObject.transform.localToWorldMatrix;
 
                 sLeafScratch.Clear();
                 int rebuilt;
@@ -1201,6 +1519,9 @@ namespace FairyGUI
                 }
                 else
                 {
+                    //color tier (batch 3): deferred alpha/tint must land in the
+                    //mesh before it is re-read
+                    graphics._RestoreNativeColors();
                     mesh.GetVertices(sVerts);
                     mesh.GetUVs(0, sUVs);
                     mesh.GetColors(sColors);
@@ -1225,12 +1546,14 @@ namespace FairyGUI
                 {
                     QuadInstance q = i < rebuilt ? sLeafScratch[i] : default;
                     q.clipIndex = range.clipIndex;
+                    q.transformIndex = range.slotIndex;
                     _quads[range.start + i] = q;
                     _uploadArray[range.start + i] = q;
                     if (_vertexPath)
                         QuadVertex.WriteQuad(_vertexUpload, range.start + i, in q);
                 }
                 range.liveCount = rebuilt;
+                range.bakedAlpha = graphics._currentAlpha;
 
                 //coalesce (batch 2): mark the owning segment's dirty range; the
                 //Flush loop uploads each segment once, direct callers keep the
@@ -1242,6 +1565,61 @@ namespace FairyGUI
                 if (!deferUpload)
                     UploadDirtyRange(owner);
                 return true;
+            }
+        }
+
+        /// <summary>
+        /// Color tier (batch 3): alpha/tint change on a claimed leaf rewrites only
+        /// the color field of its live quads — no native mesh read, no reassembly.
+        /// The alpha basis is rescaled from the baked value (QuadReassembler takes
+        /// one color per quad, so this is exact); a leaf baked at alpha 0 has no
+        /// recoverable basis and takes the full path once, as does a deferred tint
+        /// on an analytic (SDF/curve) leaf whose quads mix fill/border colors.
+        /// </summary>
+        void UpdateLeafColor(NGraphics graphics)
+        {
+            if (!_leafLookup.TryGetValue(graphics, out LeafRange range))
+                return;
+            if (_vertexPath ? _vertexUpload == null : _buffer == null)
+                return;
+
+            float alpha = graphics._currentAlpha;
+            bool tint = graphics._tintStale;
+            if (range.bakedAlpha <= 0f || (tint && (range.sdf || range.curve)))
+            {
+                if (!UpdateLeaf(graphics, true))
+                    _structureDirty = true;
+                return;
+            }
+
+            float scale = alpha / range.bakedAlpha;
+            Color tintRgb = graphics._tintColor;
+            bool tintRewrite = tint && !range.sdf && !range.curve;
+            for (int i = 0; i < range.liveCount; i++)
+            {
+                QuadInstance q = _quads[range.start + i];
+                Color c = q.color;
+                if (tintRewrite)
+                {
+                    c.r = tintRgb.r;
+                    c.g = tintRgb.g;
+                    c.b = tintRgb.b;
+                }
+                c.a *= scale;
+                q.color = c;
+                _quads[range.start + i] = q;
+                _uploadArray[range.start + i] = q;
+                if (_vertexPath)
+                    QuadVertex.WriteQuad(_vertexUpload, range.start + i, in q);
+            }
+            range.bakedAlpha = alpha;
+
+            if (range.liveCount > 0)
+            {
+                Segment owner = _segments[range.segIndex];
+                if (range.start < owner.dirtyMin) owner.dirtyMin = range.start;
+                int last = range.start + range.liveCount - 1;
+                if (last > owner.dirtyMax) owner.dirtyMax = last;
             }
         }
 
@@ -1310,6 +1688,25 @@ namespace FairyGUI
                 {
                     ComputeRunOrders();
                     _lastRunOrderProbe = runProbe;
+                }
+
+                //transform slots (batch 3): a slot container moved — re-derive the
+                //slot matrices (and any slot-riding internal clips) from the live
+                //transforms; the refreshed values ride the property push below
+                if (_slotsDirty)
+                {
+                    _slotsDirty = false;
+                    RecomputeSlotMatrices();
+                    if (_hasSlottedClips)
+                    {
+                        RecomputeSlottedClips();
+                        if (!_vertexPath && _clipBuffer != null)
+                        {
+                            _clipEntries.CopyTo(_clipUploadArray);
+                            _clipBuffer.SetData(_clipUploadArray, 0, 0, _clipEntries.Count);
+                        }
+                    }
+                    _propsDirty = true;
                 }
 
                 //stream-level uniforms: push property blocks only when something
@@ -1383,6 +1780,7 @@ namespace FairyGUI
                         seg.props.SetVector("_ScrollOffset", _scrollOffset);
                         seg.props.SetVector("_ClipRect", _clipRect);
                         seg.props.SetVector("_ClipSoft", _clipSoft);
+                        seg.props.SetMatrixArray("_TransformSlots", _slotMatrixArr);
                         if (_vertexPath)
                         {
                             seg.props.SetVectorArray("_ClipRects", _clipRectArr);
@@ -1507,7 +1905,12 @@ namespace FairyGUI
             foreach (var seg in _segments)
             {
                 if (seg.go != null)
+                {
+                    //Destroy defers to end of frame: deactivate first so a
+                    //disposed stream stops rendering IMMEDIATELY
+                    seg.go.SetActive(false);
                     DestroyObject(seg.go);
+                }
             }
             foreach (var seg2 in _segments)
             {
@@ -1524,6 +1927,9 @@ namespace FairyGUI
             foreach (var m in _meshPool)
                 DestroyObject(m);
             _meshPool.Clear();
+            _prevSegments.Clear();
+            _segmentObjPool.Clear();
+            _mpbPool.Clear();
             _leaves.Clear();
             _quads.Clear();
             _runBarriers.Clear();

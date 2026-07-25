@@ -31,6 +31,9 @@ Shader "FairyGUI/InstancedUIAttribs"
             #define MAX_CLIPS 16
             float4 _ClipRects[MAX_CLIPS]; //xMin yMin xMax yMax, unscrolled stream-local
             float4 _ClipSofts[MAX_CLIPS]; //softness px toward min/max edges
+            //transform slots (design 4.2 tier 1): slot-baked quads are mapped
+            //back to stream-root space here; index 0 is identity
+            float4x4 _TransformSlots[16];
 
             float4 _ScrollOffset;  //xy applied to every quad
             float4 _ClipRect;      //external window: xMin yMin xMax yMax
@@ -66,6 +69,9 @@ Shader "FairyGUI/InstancedUIAttribs"
             {
                 float2 c = a.corner;
                 float2 raw = a.rect.xy + a.rect.zw * c;
+                int slotIdx = (int)(a.misc.x + 0.5);
+                if (slotIdx != 0)
+                    raw = mul(_TransformSlots[slotIdx], float4(raw, 0.0, 1.0)).xy;
                 float2 local = raw + _ScrollOffset.xy;
                 float2 uv = lerp(lerp(a.uvA.xy, a.uvA.zw, c.x),
                                  lerp(a.uvB.xy, a.uvB.zw, c.x), c.y);

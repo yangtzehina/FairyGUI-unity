@@ -124,6 +124,9 @@ uint   _pad;
 - **0 级（uniform 级）**：整棵实例流的根容器矩阵，`_ContainerL2W` uniform。
   根容器整体移动零成本（PoC 已验证）。
 - **1 级（transform 槽）**：滚动容器、常动的中间容器各占一个槽。
+  **已实现（批 3，2026-07-25）**：自适应热提升——首动重编译并入槽（≤15 槽），后续动 = 写
+  矩阵数组；槽内子树以槽空间烘焙，槽内 clip 条目按 owner 现值 CPU 重算；实测容器 tween
+  0.007ms/帧 vs 每帧重编译 0.127ms/帧。细节见 docs/design/batch3-incremental.md。
   ScrollPane 滚动 = 写一个 float4（槽内 offset），即 PoC 的 42ns 路径推广。
   槽分配策略：编译期把"拥有 ScrollPane 的容器 + 带 gearXY/Tween 标记的容器"
   提升为槽；其余容器的变换烘进 rect。

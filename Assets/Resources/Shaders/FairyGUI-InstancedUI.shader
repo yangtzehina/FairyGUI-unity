@@ -69,6 +69,9 @@ Shader "FairyGUI/InstancedUI"
             StructuredBuffer<float4> _CurveGlyphs;
             uint _InstanceStart;
             uint _InstanceCount;
+            //transform slots (design 4.2 tier 1): slot-baked quads are mapped
+            //back to stream-root space here; index 0 is identity
+            float4x4 _TransformSlots[16];
             float4 _ScrollOffset;  //xy applied to every quad
             float4 _ClipRect;      //external window: xMin yMin xMax yMax
             float4 _ClipSoft;      //external window softness px toward min/max edges
@@ -102,6 +105,8 @@ Shader "FairyGUI/InstancedUI"
                 float2 c = float2(vid & 1u, (vid >> 1) & 1u);
 
                 float2 raw = d.rect.xy + d.rect.zw * c;
+                if (d.transformIndex != 0u)
+                    raw = mul(_TransformSlots[d.transformIndex], float4(raw, 0.0, 1.0)).xy;
                 float2 local = raw + _ScrollOffset.xy;
                 float2 uv = lerp(lerp(d.uvA.xy, d.uvA.zw, c.x),
                                  lerp(d.uvB.xy, d.uvB.zw, c.x), c.y);
