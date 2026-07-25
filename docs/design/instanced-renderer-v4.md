@@ -240,6 +240,7 @@ mergeability（评审 M10/M14 教训：enabled 也是实例化准入条件且变
 | **WebGL（M6 首攻目标）** | **顶点流后端**：QuadVertex = 实例 88B×4 角烘进段 Mesh 顶点流（SetVertexBufferParams 自定义布局），SetVertexBufferData 支持叶粒度局部上传（2 级路径保留）；ClipBuffer 改 uniform 数组（`_ClipRects[16]`，实测每流 3-4 条，16 封顶）；shader target 3.0，零 SSBO/零 SV_VertexID 依赖 | WebGL2 无 SSBO（supportsComputeShaders=false）；后端按 SystemInfo 自动选，`forceVertexPath` 供编辑器回归 |
 | GLES 3.0/3.1 低端 | 同 WebGL 顶点流后端（一套代码） | ProGPU 浏览器路径同款取舍 |
 | Built-in RP | 段 = MeshRenderer 显示子节点（M5），平台中立 | sortingOrder/翻层协议不随后端变 |
+| **已知环境怪癖（2026-07-25）** | 本机（M4/Metal/2022.3.62f3）**新启动的编辑器实例**上，buffer 路径（顶点 SSBO）的 draw 静默无输出：shader 编译通过、caps=31、无报错，但不出像素；顶点流后端正常。清 ShaderCache/重导入/聚焦 GameView 均无效；新旧代码一致复现（非回归）。编辑器内视觉验证一律走 `forceVertexPath`；播放器构建未受影响的验证留待真机冒烟（阶梯5） | 双后端设计的意外回报：验证不因此中断 |
 | URP | 同 API 可用；材质换 URP unlit 模板 | 适配点已知 |
 
 顶点流后端的代价（记录）：实例数据 ×4 复制（88B/顶点 vs 80B/实例，1100 quad

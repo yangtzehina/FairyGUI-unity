@@ -118,7 +118,11 @@ namespace FairyGUI
         {
             _instancedBy = null;
             if (meshRenderer != null)
+            {
                 meshRenderer.forceRenderingOff = false;
+                //resync the native sortingOrder skipped while claimed
+                meshRenderer.sortingOrder = _renderingOrder;
+            }
         }
 
         internal bool hasPropertyBlock
@@ -455,7 +459,11 @@ namespace FairyGUI
                 if (_renderingOrder != value)
                 {
                     _renderingOrder = value;
-                    meshRenderer.sortingOrder = value;
+                    //claimed leaves keep the managed field fresh (ComputeRunOrders
+                    //reads it) but skip the native write — the renderer is off;
+                    //_ClearInstancedOwner resyncs on release (audit batch 2)
+                    if (_instancedBy == null)
+                        meshRenderer.sortingOrder = value;
                 }
             }
         }
@@ -688,6 +696,14 @@ namespace FairyGUI
             }
             else if (_alpha != alpha)
                 ChangeAlpha(alpha);
+
+            //claimed leaves (audit batch 2): the renderer is forceRenderingOff and
+            //the stream consumes only the mesh data — skip the whole material
+            //pipeline (pooled material lookup, clip uniforms, sortingOrder write
+            //happens in SetRenderingOrder). The two blocks above stay: mesh
+            //rebuild and alpha change ARE the stream's content push channels.
+            if (_instancedBy != null)
+                return;
 
             if (_propertyBlock != null && _blockUpdated)
             {

@@ -167,13 +167,17 @@ namespace FairyGUI
             public Mesh mesh; //vertex path only: per-segment mesh with baked QuadVertex data
             public int lastSortingOrder = int.MinValue;
             public int lastLayer = -1;
+            //deferred tier-2 uploads coalesce into one range per segment (batch 2)
+            public int dirtyMin = int.MaxValue;
+            public int dirtyMax = -1;
         }
 
         class LeafRange
         {
             public NGraphics graphics;
             public int start;
-            public int count;
+            public int count;     //reserved range (text leaves include slack)
+            public int liveCount; //quads actually in use within the range
             public int segIndex;
             public uint flags;
             public uint clipIndex;
@@ -196,6 +200,7 @@ namespace FairyGUI
 
         readonly List<Segment> _segments = new List<Segment>();
         readonly List<LeafRange> _leaves = new List<LeafRange>();
+        readonly Dictionary<NGraphics, LeafRange> _leafLookup = new Dictionary<NGraphics, LeafRange>();
         readonly List<PendingLeaf> _pending = new List<PendingLeaf>();
         readonly List<AdjacencyEntry> _entries = new List<AdjacencyEntry>();
         //internal clip regions, content-space at scroll 0, WITHOUT drawOffset
@@ -236,6 +241,13 @@ namespace FairyGUI
         Vector2 _scrollOffset;
         Vector4 _clipRect;
         Vector4 _clipSoft;
+        //per-frame sync elision (batch 2): push property blocks only when the
+        //stream-level uniforms actually changed (or after an Extract)
+        bool _propsDirty;
+        Vector2 _lastScroll;
+        Vector4 _lastClipRect, _lastClipSoft;
+        int _lastCurveFontVersion = -1;
+        int _lastRunOrderProbe = int.MinValue;
         Vector2 _drawOffset;
         int _skippedPairs;
         int _maskedSubtrees;
@@ -283,10 +295,7 @@ namespace FairyGUI
         /// <summary>Validation probe: the clip entry index a leaf was stamped with.</summary>
         public uint GetLeafClipIndex(NGraphics graphics)
         {
-            for (int i = 0; i < _leaves.Count; i++)
-                if (_leaves[i].graphics == graphics)
-                    return _leaves[i].clipIndex;
-            return 0;
+            return _leafLookup.TryGetValue(graphics, out LeafRange r) ? r.clipIndex : 0;
         }
 
         /// <summary>Validation probe: a clip entry by index.</summary>
@@ -344,9 +353,11 @@ namespace FairyGUI
                     NGraphics g = _dirtyLeaves[i];
                     if (_inPlace && g._instancedBy != this)
                         continue; //released while queued
-                    if (!UpdateLeaf(g))
+                    if (!UpdateLeaf(g, true))
                         _structureDirty = true;
                 }
+                //one coalesced upload per touched segment instead of one per leaf
+                UploadAllDirtyRanges();
                 _dirtyLeaves.Clear();
                 _dirtyLeafSet.Clear();
                 if (_structureDirty)
@@ -468,6 +479,7 @@ namespace FairyGUI
                     ReleaseSegmentRenderer(seg);
                 _segments.Clear();
                 _leaves.Clear();
+                _leafLookup.Clear();
                 _quads.Clear();
                 _staging.Clear();
                 _pending.Clear();
@@ -574,6 +586,11 @@ namespace FairyGUI
                     }
                     seg.renderer.SetPropertyBlock(seg.props);
                 }
+
+                //fresh property blocks need the shared uniforms pushed once; run
+                //orders and curve-font bindings re-evaluate after a recompile
+                _propsDirty = true;
+                _lastRunOrderProbe = int.MinValue;
             }
         }
 
@@ -910,6 +927,18 @@ namespace FairyGUI
                 }
                 else
                 {
+                    //text slack (batch 2): glyph counts jitter ('9'->'10'), so
+                    //text leaves round their range up to a power of two and pad
+                    //with degenerate quads (zero size renders nothing) — length
+                    //changes within the slack stay on the microsecond tier-2
+                    //path instead of forcing a full recompile
+                    if (alphaTex && p.stageCount > 0)
+                    {
+                        int slack = Mathf.NextPowerOfTwo(p.stageCount);
+                        for (int k = p.stageCount; k < slack; k++)
+                            _staging.Add(default);
+                        p.stageCount = slack;
+                    }
                     p.instanceable = true;
                     StampClipIndex(_staging, p.stageStart, p.stageCount, clipIndex);
                 }
@@ -1087,6 +1116,7 @@ namespace FairyGUI
                     graphics = leaf.graphics,
                     start = _quads.Count,
                     count = leaf.stageCount,
+                    liveCount = leaf.stageCount,
                     segIndex = _segments.Count - 1,
                     flags = leaf.flags,
                     clipIndex = leaf.clipIndex,
@@ -1097,6 +1127,7 @@ namespace FairyGUI
                     _quads.Add(_staging[leaf.stageStart + q]);
                 seg.count = _quads.Count - seg.start;
                 _leaves.Add(range);
+                _leafLookup[range.graphics] = range;
             }
         }
 
@@ -1131,20 +1162,18 @@ namespace FairyGUI
         /// </summary>
         public bool UpdateLeaf(NGraphics graphics)
         {
+            return UpdateLeaf(graphics, false);
+        }
+
+        bool UpdateLeaf(NGraphics graphics, bool deferUpload)
+        {
 #if UNITY_2020_1_OR_NEWER
             using (sLeafUpdate.Auto())
 #endif
             {
-                LeafRange range = null;
-                for (int i = 0; i < _leaves.Count; i++)
-                {
-                    if (_leaves[i].graphics == graphics)
-                    {
-                        range = _leaves[i];
-                        break;
-                    }
-                }
-                if (range == null || (_vertexPath ? _vertexUpload == null : _buffer == null))
+                if (!_leafLookup.TryGetValue(graphics, out LeafRange range))
+                    return false;
+                if (_vertexPath ? _vertexUpload == null : _buffer == null)
                     return false;
 
                 Mesh mesh = graphics.mesh;
@@ -1179,31 +1208,65 @@ namespace FairyGUI
 
                     int skipped;
                     rebuilt = QuadReassembler.Append(sLeafScratch, sVerts, sUVs, sColors, sTris, m, _drawOffset, range.flags, out skipped);
-                    if (rebuilt != range.count || skipped > 0)
-                        return false; //count changed or topology went non-quad: recompile
+                    if (skipped > 0)
+                        return false; //topology went non-quad: recompile
+                    //text leaves carry slack (batch 2): any length within the
+                    //reserved range stays tier-2; the tail is padded below
+                    bool slackLeaf = (range.flags & QuadInstance.FlagAlphaTexture) != 0;
+                    if (slackLeaf ? rebuilt > range.count : rebuilt != range.count)
+                        return false;
                 }
 
-                for (int i = 0; i < rebuilt; i++)
+                //write the rebuilt quads; clear only the tail that was live in a
+                //previously longer text (same-length churn touches exactly the
+                //glyphs it has)
+                int touch = rebuilt > range.liveCount ? rebuilt : range.liveCount;
+                for (int i = 0; i < touch; i++)
                 {
-                    QuadInstance q = sLeafScratch[i];
+                    QuadInstance q = i < rebuilt ? sLeafScratch[i] : default;
                     q.clipIndex = range.clipIndex;
                     _quads[range.start + i] = q;
                     _uploadArray[range.start + i] = q;
                     if (_vertexPath)
                         QuadVertex.WriteQuad(_vertexUpload, range.start + i, in q);
                 }
-                if (_vertexPath)
-                {
-                    //tier-2 partial path survives the backend switch: range upload
-                    //into the owning segment's vertex buffer
-                    Segment seg = _segments[range.segIndex];
-                    seg.mesh.SetVertexBufferData(_vertexUpload, range.start * 4,
-                        (range.start - seg.start) * 4, rebuilt * 4, 0, kNoMeshChecks);
-                }
-                else
-                    _buffer.SetData(_uploadArray, range.start, range.start, rebuilt);
+                range.liveCount = rebuilt;
+
+                //coalesce (batch 2): mark the owning segment's dirty range; the
+                //Flush loop uploads each segment once, direct callers keep the
+                //old upload-immediately semantics
+                Segment owner = _segments[range.segIndex];
+                if (range.start < owner.dirtyMin) owner.dirtyMin = range.start;
+                int last = range.start + touch - 1;
+                if (last > owner.dirtyMax) owner.dirtyMax = last;
+                if (!deferUpload)
+                    UploadDirtyRange(owner);
                 return true;
             }
+        }
+
+        /// <summary>
+        /// Uploads a segment's coalesced dirty quad range and resets it (batch 2).
+        /// </summary>
+        void UploadDirtyRange(Segment seg)
+        {
+            if (seg.dirtyMax < seg.dirtyMin)
+                return;
+            int start = seg.dirtyMin;
+            int count = seg.dirtyMax - seg.dirtyMin + 1;
+            if (_vertexPath)
+                seg.mesh.SetVertexBufferData(_vertexUpload, start * 4,
+                    (start - seg.start) * 4, count * 4, 0, kNoMeshChecks);
+            else
+                _buffer.SetData(_uploadArray, start, start, count);
+            seg.dirtyMin = int.MaxValue;
+            seg.dirtyMax = -1;
+        }
+
+        void UploadAllDirtyRanges()
+        {
+            for (int i = 0; i < _segments.Count; i++)
+                UploadDirtyRange(_segments[i]);
         }
 
         /// <summary>
@@ -1235,9 +1298,35 @@ namespace FairyGUI
                 //recomputed every frame: in in-place mode the container itself moves
                 //when its ScrollPane scrolls, while the mask window stays put
                 ComputeExternalWindow();
-                ComputeRunOrders();
 
-                if (_vertexPath)
+                //run orders shift only when the native renderingOrder assignment
+                //moved (tree changes outside the stream shift our block uniformly,
+                //changes inside recompile via Extract) — probe first leaf+barrier
+                //instead of walking every leaf every frame (batch 2)
+                int runProbe = _leaves.Count > 0 ? _leaves[0].graphics.renderingOrder : 0;
+                if (_runBarriers.Count > 0)
+                    runProbe = (runProbe * 397) ^ _runBarriers[0].renderingOrder;
+                if (runProbe != _lastRunOrderProbe)
+                {
+                    ComputeRunOrders();
+                    _lastRunOrderProbe = runProbe;
+                }
+
+                //stream-level uniforms: push property blocks only when something
+                //they carry actually changed (batch 2)
+                int curveVer = -1;
+                if (!_vertexPath && CurveFontStore.loaded)
+                {
+                    CurveFontStore.EnsureBuffers();
+                    curveVer = CurveFontStore.version;
+                }
+                bool pushProps = _propsDirty
+                    || _scrollOffset != _lastScroll
+                    || _clipRect != _lastClipRect
+                    || _clipSoft != _lastClipSoft
+                    || curveVer != _lastCurveFontVersion;
+
+                if (pushProps && _vertexPath)
                 {
                     //internal clips as uniform arrays (always full-size: Unity pins
                     //array length at first use per shader)
@@ -1289,17 +1378,29 @@ namespace FairyGUI
                         seg.lastLayer = layer;
                     }
 
-                    seg.props.SetVector("_ScrollOffset", _scrollOffset);
-                    seg.props.SetVector("_ClipRect", _clipRect);
-                    seg.props.SetVector("_ClipSoft", _clipSoft);
-                    if (_vertexPath)
+                    if (pushProps)
                     {
-                        seg.props.SetVectorArray("_ClipRects", _clipRectArr);
-                        seg.props.SetVectorArray("_ClipSofts", _clipSoftArr);
+                        seg.props.SetVector("_ScrollOffset", _scrollOffset);
+                        seg.props.SetVector("_ClipRect", _clipRect);
+                        seg.props.SetVector("_ClipSoft", _clipSoft);
+                        if (_vertexPath)
+                        {
+                            seg.props.SetVectorArray("_ClipRects", _clipRectArr);
+                            seg.props.SetVectorArray("_ClipSofts", _clipSoftArr);
+                        }
+                        else if (curveVer >= 0)
+                            CurveFontStore.Bind(seg.props);
+                        seg.renderer.SetPropertyBlock(seg.props);
                     }
-                    else if (CurveFontStore.loaded)
-                        CurveFontStore.Bind(seg.props); //rebind every frame: buffers may rebuild on new chars
-                    seg.renderer.SetPropertyBlock(seg.props);
+                }
+
+                if (pushProps)
+                {
+                    _propsDirty = false;
+                    _lastScroll = _scrollOffset;
+                    _lastClipRect = _clipRect;
+                    _lastClipSoft = _clipSoft;
+                    _lastCurveFontVersion = curveVer;
                 }
             }
         }
