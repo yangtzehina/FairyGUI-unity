@@ -302,18 +302,27 @@ namespace FairyGUI
                 {
                     _visible = value;
                     _flags |= Flags.OutlineChanged;
+                    //M8-4: the mount visibility tier goes FIRST — when it
+                    //services the toggle (quad-range rewrite), the batching
+                    //and structure invalidation below must not fire, or the
+                    //recompile it just avoided happens anyway
+                    bool handled = InstancedUIStream._NotifyVisible(this);
                     if (parent != null && _visible)
                     {
                         gameObject.SetActive(true);
-                        InvalidateBatchingState();
-                        if (this is Container)
-                            ((Container)this).InvalidateBatchingState(true);
+                        if (!handled)
+                        {
+                            InvalidateBatchingState();
+                            if (this is Container)
+                                ((Container)this).InvalidateBatchingState(true);
+                        }
                     }
                     else
                         gameObject.SetActive(false);
                     //push in BOTH directions (review M8: the hide branch skips
                     //InvalidateBatchingState, so notify the stream directly)
-                    InstancedUIStream._NotifyStructure(this);
+                    if (!handled)
+                        InstancedUIStream._NotifyStructure(this);
                 }
             }
         }

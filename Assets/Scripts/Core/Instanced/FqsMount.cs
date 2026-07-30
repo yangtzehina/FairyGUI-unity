@@ -27,6 +27,7 @@ namespace FairyGUI
         internal Texture[] textures;         //resolved texRefs (-1 slots stay null)
         internal Vector4 localBounds;        //quad AABB in mount-local space (sort entry)
         internal bool invalid;
+        internal bool spliced; //at least one extract has spliced this mount
         //leaves rewritten via tier-2 since mount: a re-splice restores stale
         //blob quads for them, so the splice re-queues these for a fresh rewrite
         internal readonly HashSet<NGraphics> rewritten = new HashSet<NGraphics>();

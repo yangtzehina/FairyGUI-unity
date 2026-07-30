@@ -142,14 +142,23 @@ namespace FairyGUI
             {
                 if (c._instancedStream != null)
                     return; //stream root: tier 0, nothing to do
+                FqsMount viaMount = null;
                 for (Container p = c.parent; p != null; p = p.parent)
                 {
-                    //an interior container moved INSIDE a baked mount: the blob
-                    //no longer matches — fall the subtree back to the runtime walk
-                    if (p._fqsMount != null)
-                        p._fqsMount.invalid = true;
+                    if (viaMount == null && p._fqsMount != null)
+                        viaMount = p._fqsMount;
                     if (p._instancedStream != null)
                     {
+                        //M8-4: a container moved INSIDE a valid spliced mount is
+                        //serviced as per-leaf tier-2 rewrites (slot-relative
+                        //matrices make them exact); only unserviceable cases
+                        //invalidate and recompile
+                        if (viaMount != null && !viaMount.invalid && viaMount.spliced)
+                        {
+                            if (p._instancedStream._OnMountInteriorTransform(c))
+                                return;
+                            viaMount.invalid = true;
+                        }
                         p._instancedStream._OnInteriorContainerMoved(c);
                         return;
                     }
@@ -180,6 +189,35 @@ namespace FairyGUI
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// Visibility channel (M8-4): a toggle INSIDE a valid baked mount is a
+        /// quad-range rewrite (hide = zero the ranges, show = rebuild from the
+        /// live meshes) — gear paging and transition display locks stop
+        /// recompiling. Everything else keeps the structure semantics.
+        /// </summary>
+        internal static bool _NotifyVisible(DisplayObject obj)
+        {
+            if (liveInPlaceCount == 0)
+                return false;
+            FqsMount mount = obj is Container oc && oc._fqsMount != null ? oc._fqsMount : null;
+            InstancedUIStream stream = null;
+            for (DisplayObject p = obj.parent; p != null; p = p.parent)
+            {
+                if (p is Container c)
+                {
+                    if (mount == null && c._fqsMount != null)
+                        mount = c._fqsMount;
+                    if (c._instancedStream != null)
+                    {
+                        stream = c._instancedStream;
+                        break;
+                    }
+                }
+            }
+            return mount != null && !mount.invalid && mount.spliced && stream != null
+                && stream._OnMountVisibility(obj);
         }
 
         class Segment
@@ -220,6 +258,7 @@ namespace FairyGUI
             public float bakedAlpha; //context alpha baked into the quads (color tier)
             public uint slotIndex;   //transform slot the quads are baked against
             public FqsMount mount;   //M8-2: owning mount (rewrite/invalidate protocol)
+            public bool hidden;      //M8-4: visibility tier zeroed this range
             public uint texIndexBits; //segment texture-slot bits (flags 16-17)
             public int segIndex;
             public uint flags;
@@ -1834,6 +1873,173 @@ namespace FairyGUI
                 else if (g._colorStale || g._currentAlpha != lr.bakedAlpha)
                     _QueueLeafColor(g);
             }
+
+            //M8-4: visibility is re-derived from the LIVE flags every splice
+            //(stateless — hidden branches zero their ranges again)
+            {
+                int cnt = fm.root.numChildren;
+                for (int i = 0; i < cnt; i++)
+                {
+                    DisplayObject child = fm.root.GetChildAt(i);
+                    if (!child.visible)
+                        HideSubtree(child, true);
+                    else
+                        HideInvisibleBelow(child);
+                }
+            }
+            fm.spliced = true;
+        }
+
+        void HideInvisibleBelow(DisplayObject obj)
+        {
+            if (obj is Container c)
+            {
+                int cnt = c.numChildren;
+                for (int i = 0; i < cnt; i++)
+                {
+                    DisplayObject child = c.GetChildAt(i);
+                    if (!child.visible)
+                        HideSubtree(child, true);
+                    else
+                        HideInvisibleBelow(child);
+                }
+            }
+        }
+
+        /// <summary>
+        /// M8-4 visibility tier: hide zeroes the subtree's mounted quad ranges
+        /// in place; show clears the flag and requeues tier-2 rebuilds (settled
+        /// in the same frame's Flush). Showing content ABSENT from the blob
+        /// (invisible at bake) invalidates the mount — the runtime walk renders
+        /// it, correctness over speed.
+        /// </summary>
+        internal bool _OnMountVisibility(DisplayObject obj)
+        {
+            if (_leaves.Count == 0)
+                return false;
+            if (obj.visible)
+            {
+                if (!ShowSubtree(obj))
+                    return false;
+            }
+            else
+                HideSubtree(obj, false);
+            return true;
+        }
+
+        /// <summary>
+        /// M8-4: services a container transform inside a valid mount as exact
+        /// per-leaf rewrites (slot-relative matrices re-read the live
+        /// transforms). Returns false when an unclaimed visible leaf exists
+        /// under it (content the stream does not carry).
+        /// </summary>
+        internal bool _OnMountInteriorTransform(Container c)
+        {
+            if (_leaves.Count == 0)
+                return false;
+            if (!QueueSubtreeUpdates(c))
+                return false;
+            //the moved container (or a descendant) may OWN slot-riding clip
+            //entries — their root-space rects re-derive from live transforms
+            //through the slot-dirty recompute path
+            _slotsDirty = true;
+            return true;
+        }
+
+        bool QueueSubtreeUpdates(DisplayObject obj)
+        {
+            NGraphics g = obj.graphics;
+            if (g != null && g.texture != null)
+            {
+                if (_leafLookup.TryGetValue(g, out LeafRange r))
+                {
+                    if (!r.hidden)
+                        _QueueLeafUpdate(g);
+                }
+                else if (obj.visible)
+                    return false; //visible content the stream does not carry
+            }
+            if (obj is Container c)
+            {
+                int cnt = c.numChildren;
+                for (int i = 0; i < cnt; i++)
+                {
+                    DisplayObject child = c.GetChildAt(i);
+                    if (!child.visible)
+                        continue;
+                    if (!QueueSubtreeUpdates(child))
+                        return false;
+                }
+            }
+            return true;
+        }
+
+        void HideSubtree(DisplayObject obj, bool inExtract)
+        {
+            if (obj.graphics != null)
+                HideLeaf(obj.graphics, inExtract);
+            if (obj is Container c)
+            {
+                int cnt = c.numChildren;
+                for (int i = 0; i < cnt; i++)
+                    HideSubtree(c.GetChildAt(i), inExtract);
+            }
+        }
+
+        void HideLeaf(NGraphics g, bool inExtract)
+        {
+            if (!_leafLookup.TryGetValue(g, out LeafRange range) || range.hidden)
+                return;
+            range.hidden = true;
+            for (int i = 0; i < range.liveCount; i++)
+            {
+                _quads[range.start + i] = default;
+                if (!inExtract)
+                {
+                    _uploadArray[range.start + i] = default;
+                    if (_vertexPath)
+                        QuadVertex.WriteQuad(_vertexUpload, range.start + i, default);
+                }
+            }
+            if (!inExtract && range.liveCount > 0)
+            {
+                Segment owner = _segments[range.segIndex];
+                if (range.start < owner.dirtyMin) owner.dirtyMin = range.start;
+                int last = range.start + range.liveCount - 1;
+                if (last > owner.dirtyMax) owner.dirtyMax = last;
+                UploadDirtyRange(owner);
+            }
+        }
+
+        bool ShowSubtree(DisplayObject obj)
+        {
+            NGraphics g = obj.graphics;
+            //NOTE: no mesh guards here — a leaf hidden since birth has an
+            //UNBUILT mesh, and that is exactly the "absent from the blob"
+            //case that must invalidate (the runtime walk claims it properly)
+            if (g != null && g.texture != null)
+            {
+                if (!_leafLookup.TryGetValue(g, out LeafRange range))
+                    return false; //absent from the blob: only the runtime walk can render it
+                if (range.hidden)
+                {
+                    range.hidden = false;
+                    _QueueLeafUpdate(g);
+                }
+            }
+            if (obj is Container c)
+            {
+                int cnt = c.numChildren;
+                for (int i = 0; i < cnt; i++)
+                {
+                    DisplayObject child = c.GetChildAt(i);
+                    if (!child.visible)
+                        continue;
+                    if (!ShowSubtree(child))
+                        return false;
+                }
+            }
+            return true;
         }
 
         void AddSegTex(Segment sg, FqsMount fm, int texRef)
@@ -1888,6 +2094,8 @@ namespace FairyGUI
                     return false;
                 if (_vertexPath ? _vertexUpload == null : _buffer == null)
                     return false;
+                if (range.hidden)
+                    return true; //stays zeroed; the show path requeues a rebuild
 
                 Mesh mesh = graphics.mesh;
                 if (mesh == null)
@@ -1990,6 +2198,8 @@ namespace FairyGUI
             if (_vertexPath ? _vertexUpload == null : _buffer == null)
                 return;
 
+            if (range.hidden)
+                return; //zeroed by the visibility tier
             float alpha = graphics._currentAlpha;
             bool tint = graphics._tintStale;
             if (range.bakedAlpha <= 0f || (tint && (range.sdf || range.curve)))
