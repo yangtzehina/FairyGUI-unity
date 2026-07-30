@@ -39,3 +39,6 @@ TextMesh Pro/
 TextMesh Pro.meta
 Assets/StreamingAssets/
 Assets/StreamingAssets.meta
+# FQS baked blobs are generated accelerators (Tools/FairyGUI/Bake Packages), never sources
+Assets/Baked/
+Assets/Baked.meta

@@ -102,7 +102,7 @@ public partial class 确认按钮View   //per exported component, opt-in 输出�
 | 日期 | 站 | 状态 | 验证 |
 |---|---|---|---|
 | 2026-07-30 | 立项 | ✅ 本文档 | — |
-| — | M8-1 | ⬜ | — |
+| 2026-07-30 | M8-1 | ✅ | 专项 15/15：逐位 quad 一致、字节级确定性、篡改/敌意计数干净拒绝、拒绝规则全套（根级 mask/文本对象存在即拒/movieclip/外部纹理默认拒/blend 栅栏）；真实包冒烟 Basics 5/28 组件烘出（全 Package TexRef + 源哈希），其余按精确理由拒绝。像素门随装载移至 M8-2。三代理对抗核查 1 blocker + 7 must-fix 全修：根级 mask 漏拒、Read 无前置校验（敌意计数 OOM）、LeafRecord 隐式尾 padding 显式化、烘焙后端未钉死（顶点路径 clip 粗化会冻进 blob）、External TexRef 会话态身份、图集冷热致文本拒绝不确定（改存在即拒）、菜单重名覆盖（改 ID 创建）、GRoot 缩放漂入 quad 低位（改无缩放 Stage 挂载）。 |
 | — | M8-2 | ⬜ | — |
 | — | M8-3 | ⬜ | — |
 | — | M8-4 | ⬜ | — |

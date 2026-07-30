@@ -412,6 +412,49 @@ namespace FairyGUI
             return _claimed.Contains(graphics);
         }
 
+        /// <summary>
+        /// M8-1 (FqsBaker): copies the compiled stream state out for baking.
+        /// Pure read — the stream stays usable afterwards.
+        /// </summary>
+        internal void _CaptureBakeSnapshot(List<QuadInstance> quads,
+            List<FqsSegSnap> segs, List<FqsLeafSnap> leaves, List<FqsClipSnap> clips)
+        {
+            quads.AddRange(_quads);
+            for (int i = 0; i < _segments.Count; i++)
+            {
+                Segment sg = _segments[i];
+                segs.Add(new FqsSegSnap
+                {
+                    start = sg.start, count = sg.count, runIndex = sg.runIndex, z = sg.z,
+                    t0 = sg.texCount > 0 ? sg.textures[0] : null,
+                    t1 = sg.texCount > 1 ? sg.textures[1] : null,
+                    t2 = sg.texCount > 2 ? sg.textures[2] : null,
+                    t3 = sg.texCount > 3 ? sg.textures[3] : null,
+                });
+            }
+            for (int i = 0; i < _leaves.Count; i++)
+            {
+                LeafRange l = _leaves[i];
+                leaves.Add(new FqsLeafSnap
+                {
+                    graphics = l.graphics,
+                    start = l.start, count = l.count, liveCount = l.liveCount,
+                    flags = l.flags, clipIndex = l.clipIndex, slotIndex = l.slotIndex,
+                    bakedAlpha = l.bakedAlpha, sdf = l.sdf, curve = l.curve,
+                });
+            }
+            for (int i = 0; i < _clipEntries.Count; i++)
+            {
+                clips.Add(new FqsClipSnap
+                {
+                    rect = _clipEntries[i].rect, soft = _clipEntries[i].soft,
+                    parentIndex = i < _clipMeta.Count ? _clipMeta[i].parentIndex : 0,
+                    slotIndex = i < _clipMeta.Count ? _clipMeta[i].slotIndex : 0,
+                    owner = i < _clipMeta.Count ? _clipMeta[i].owner : null,
+                });
+            }
+        }
+
         /// <summary>Structure channel consumer: recompile on the next Flush/Render.</summary>
         internal void _MarkStructureDirty()
         {
