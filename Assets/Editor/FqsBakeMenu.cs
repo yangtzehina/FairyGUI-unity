@@ -17,13 +17,24 @@ namespace FairyGUIEditor
         [MenuItem("Tools/FairyGUI/Bake Packages (FQS)")]
         static void Bake()
         {
+            BakeAll();
+        }
+
+        /// <summary>
+        /// One pass over every loaded package's exported components: FQS blob
+        /// per bakeable component (M8-1) AND a typed view facade per component
+        /// regardless of blob bakeability (M8-3 — text components deserve
+        /// views too). Returns (blobsBaked, blobsRefused, viewsWritten).
+        /// </summary>
+        public static Vector3Int BakeAll()
+        {
             if (!Application.isPlaying)
             {
-                Debug.LogWarning("FQS bake: enter play mode with UI packages loaded first (M8-1 scope).");
-                return;
+                Debug.LogWarning("FQS bake: enter play mode with UI packages loaded first.");
+                return default;
             }
 
-            int baked = 0, refused = 0;
+            int baked = 0, refused = 0, viewsWritten = 0;
             var pkgs = UIPackage.GetPackages();
             foreach (var pkg in pkgs)
             {
@@ -31,6 +42,7 @@ namespace FairyGUIEditor
                 if (hash == 0)
                     Debug.LogWarning($"FQS: no source hash for package '{pkg.name}' (non-Resources load) — the staleness gate is DISABLED for its blobs.");
                 var usedNames = new System.Collections.Generic.HashSet<string>();
+                var usedClassNames = new System.Collections.Generic.HashSet<string>();
                 foreach (var item in pkg.GetItems())
                 {
                     if (item.type != PackageItemType.Component || !item.exported)
@@ -50,6 +62,12 @@ namespace FairyGUIEditor
                     //the baked quads and break reproducible re-bakes
                     Stage.inst.AddChild(com.displayObject);
                     Stage.inst.ForceUpdate();
+
+                    //M8-3: view facade for EVERY exported component
+                    string src = FqsViewGenerator.GenerateSource(pkg, item, com, usedClassNames, out string clsName);
+                    if (FqsViewGenerator.WriteIfChanged($"Assets/BakedViews/{pkg.name}/{clsName}.cs", src))
+                        viewsWritten++;
+
                     byte[] blob = FqsBaker.Bake((Container)com.displayObject, hash, out string reason);
                     com.Dispose();
                     if (blob == null)
@@ -72,8 +90,36 @@ namespace FairyGUIEditor
                     }
                 }
             }
+            //two-phase codegen (charter §3): changed views must COMPILE before
+            //anything can consume the types — mark pending, let the domain
+            //reload happen, verify from fresh assemblies in OnViewsReloaded
+            if (viewsWritten > 0)
+                SessionState.SetBool("Fqs.ViewsPending", true);
             AssetDatabase.Refresh();
-            Debug.Log($"FQS bake: {baked} baked, {refused} refused, {pkgs.Count} packages");
+            Debug.Log($"FQS bake: {baked} blobs baked, {refused} refused, {viewsWritten} views written, {pkgs.Count} packages");
+            return new Vector3Int(baked, refused, viewsWritten);
+        }
+
+        [UnityEditor.Callbacks.DidReloadScripts]
+        static void OnViewsReloaded()
+        {
+            if (!SessionState.GetBool("Fqs.ViewsPending", false))
+                return;
+            SessionState.SetBool("Fqs.ViewsPending", false);
+            int n = 0;
+            foreach (var asm in System.AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (asm.IsDynamic)
+                    continue;
+                try
+                {
+                    foreach (var t in asm.GetTypes())
+                        if (t.Namespace != null && t.Namespace.StartsWith("FairyGUI.Baked"))
+                            n++;
+                }
+                catch (System.Reflection.ReflectionTypeLoadException) { }
+            }
+            Debug.Log($"FQS views settled: {n} generated types compiled and loadable.");
         }
 
         static ulong SourceHash(UIPackage pkg)

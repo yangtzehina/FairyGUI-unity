@@ -104,7 +104,7 @@ public partial class 确认按钮View   //per exported component, opt-in 输出�
 | 2026-07-30 | 立项 | ✅ 本文档 | — |
 | 2026-07-30 | M8-1 | ✅ | 专项 15/15：逐位 quad 一致、字节级确定性、篡改/敌意计数干净拒绝、拒绝规则全套（根级 mask/文本对象存在即拒/movieclip/外部纹理默认拒/blend 栅栏）；真实包冒烟 Basics 5/28 组件烘出（全 Package TexRef + 源哈希），其余按精确理由拒绝。像素门随装载移至 M8-2。三代理对抗核查 1 blocker + 7 must-fix 全修：根级 mask 漏拒、Read 无前置校验（敌意计数 OOM）、LeafRecord 隐式尾 padding 显式化、烘焙后端未钉死（顶点路径 clip 粗化会冻进 blob）、External TexRef 会话态身份、图集冷热致文本拒绝不确定（改存在即拒）、菜单重名覆盖（改 ID 创建）、GRoot 缩放漂入 quad 低位（改无缩放 Stage 挂载）。 |
 | 2026-07-30 | M8-2 | ✅ | 专项 19/19：**挂载即转换槽**（blob quads 天然组件局部空间 → 挂载容器分配槽，移动/缩放 tier-1 零重编译）；M8-1 顺延像素门通过（挂载 vs 运行时全区域 diff=0）；混合行为（动态兄弟 churn tier-2、烘焙叶颜色 tier 按 bakedAlpha 精确重标定、tier-2 重写 + 重拼接同帧自愈）；失效协议（挂载内结构变化 → 失效 → 运行时回退照常渲染；哈希门拒绝陈旧 blob）。实测 200 叶子树 Extract：挂载 0.111ms vs 运行时 0.781ms = **7.03×**。施工修正：Flush 结构分支 Extract 后跌落队列处理段（拼接自愈同帧结算，不闪帧）。环境教训：多轮 Play 循环后编辑器可能落在空场景（相机无引导、全屏零渲染）——像素验证前须确认演示场景已打开。 |
-| — | M8-3 | ⬜ | — |
+| 2026-07-30 | M8-3 | ✅ | 生成器专项 12/12（phase A 7 + phase B 5）：29 个导出组件全量生成 enum facade（嵌套页 enum + 类型化 {ctrl}Page 属性 + m_ 子引用按索引构造期绑定 + int-switch 桥）；幂等重烘二次零写盘；边界用例（关键字 @escape、数字前缀、标点折叠 dedup）；域重载后 35 个生成类型可加载，Demo_ButtonView 实测 31 子引用全非空、enum 翻页直驱运行时控制器。编辑器与桌面双编译零警告；**编译期报错演示**：删页/改名探针 4 个 CS0117/CS1061。与 OpenFairy 形态的偏差已记：我们是纯类 facade 构造期绑定（无 prefab 序列化接线，[SerializeField] internal 不适用）；两阶段域重载为 SessionState pending + DidReloadScripts 结算日志（本站无烘焙期消费生成类型的环节，机制为后站备用）。 |
 | — | M8-4 | ⬜ | — |
 | — | M8-5 | ⬜ | — |
 | — | M8-6 | ⬜ | — |
