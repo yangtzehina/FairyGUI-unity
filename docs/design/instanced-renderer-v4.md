@@ -461,6 +461,20 @@ FuiReader 解析组件树与图集 sprite 矩形——**布局结构与图集 UV
   只是漂移发生在**编译期**，可被既有 0.000% 像素对比设施在 CI 里逐组件
   抓住（生成器同时嵌入 .fui 内容哈希做过期检测）。命中测试不受影响
   （从不走 renderer，§10）。
+- **外部实证（2026-07-30，OpenFairy-SDK-uGUI 精读，详见
+  docs/research/openfairy-analysis.md）**：烘焙优先路线已有 ~3k 行转换器级的
+  完整实现——全授权面（controller/gear/relation/transition/list/字体）确证可
+  编译为静态数据+生成代码，容器 relation 确证仿射可折叠（27 种 RelationSide
+  → anchor 公式）且不可折叠边界清晰（兄弟目标 relation 留运行时）。直接采纳：
+  生成类形态（嵌套 controller enum + Controller<T> struct + int-switch 非泛型桥、
+  `[SerializeField] internal`+InternalsVisibleTo 接线）、codegen 死锁解法（内容
+  比较写盘 + SessionState pending + [DidReloadScripts] 恢复）、边界用例表
+  （关键字/标点折叠、基类遮蔽、删页引用、跨包 global::）。同样重要的反面证据：
+  纯烘焙后端的代价明确（无 CreateObject、无运行时包加载、虚拟化推迟）——
+  **M8 的正确形态是混合**（静态子树烘焙 + 动态内容走 v4 运行时流，共享段/槽
+  协议），且我们烘焙输入应取二进制包字节（parser 在库内百战）而非编辑器工程
+  XML。烘焙工件脆性入约束：SerializeReference 跨程序集即碎、类型身份即 ABI、
+  产物版本戳、无对象子树的 hit 面必须作为显式数据编入流。
 
 ### 不能/不必：生成 shader
 
