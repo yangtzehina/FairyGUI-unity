@@ -423,6 +423,9 @@ mergeability（评审 M10/M14 教训：enabled 也是实例化准入条件且变
 
 ## 15. 编译期生成的边界（Source Generator 能与不能）
 
+> **2026-07-30 已立项**：M8 烘焙线施工设计（混合形态、FQS1 热 blob 格式、序列化分层
+> 决策、六站里程碑与验收门）见 **docs/design/m8-bake-line.md**；本节保留原始分析。
+
 已有设施：MVVM 管线的 FuiViewGenerator 通过 csc.rsp additionalfile 读 .fui，
 FuiReader 解析组件树与图集 sprite 矩形——**布局结构与图集 UV 在编译期已知**。
 
