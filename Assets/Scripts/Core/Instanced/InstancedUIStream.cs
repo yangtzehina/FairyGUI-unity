@@ -144,6 +144,10 @@ namespace FairyGUI
                     return; //stream root: tier 0, nothing to do
                 for (Container p = c.parent; p != null; p = p.parent)
                 {
+                    //an interior container moved INSIDE a baked mount: the blob
+                    //no longer matches — fall the subtree back to the runtime walk
+                    if (p._fqsMount != null)
+                        p._fqsMount.invalid = true;
                     if (p._instancedStream != null)
                     {
                         p._instancedStream._OnInteriorContainerMoved(c);
@@ -163,10 +167,17 @@ namespace FairyGUI
                 return;
             for (DisplayObject p = obj; p != null; p = p.parent)
             {
-                if (p is Container c && c._instancedStream != null)
+                if (p is Container c)
                 {
-                    c._instancedStream._structureDirty = true;
-                    return;
+                    //structure changed inside a baked mount: blob no longer
+                    //matches the live subtree — runtime walk takes over
+                    if (c._fqsMount != null)
+                        c._fqsMount.invalid = true;
+                    if (c._instancedStream != null)
+                    {
+                        c._instancedStream._structureDirty = true;
+                        return;
+                    }
                 }
             }
         }
@@ -208,6 +219,7 @@ namespace FairyGUI
             public int liveCount; //quads actually in use within the range
             public float bakedAlpha; //context alpha baked into the quads (color tier)
             public uint slotIndex;   //transform slot the quads are baked against
+            public FqsMount mount;   //M8-2: owning mount (rewrite/invalidate protocol)
             public uint texIndexBits; //segment texture-slot bits (flags 16-17)
             public int segIndex;
             public uint flags;
@@ -229,6 +241,8 @@ namespace FairyGUI
             public bool curve;        //M9b: quads are curve-text glyphs
             public float bakeAlpha;   //graphics alpha at stage time (color tier)
             public uint slotIndex;    //transform slot the quads are baked against
+            public FqsMount mount;    //M8-2: whole-subtree splice from a baked blob
+            public uint[] mountClipMap; //blob clip index -> stream clip index
         }
 
         readonly List<Segment> _segments = new List<Segment>();
@@ -514,7 +528,9 @@ namespace FairyGUI
                 _colorLeaves.Clear();
                 _colorLeafSet.Clear();
                 Extract();
-                return;
+                //fall through: a mount splice may have re-queued rewritten or
+                //color-stale leaves (M8-2 self-heal) — settle them THIS frame
+                //so a re-splice never renders stale blob data even for one frame
             }
 
             if (_dirtyLeaves.Count > 0 || _colorLeaves.Count > 0)
@@ -524,7 +540,18 @@ namespace FairyGUI
                     NGraphics g = _dirtyLeaves[i];
                     if (_inPlace && g._instancedBy != this)
                         continue; //released while queued
-                    if (!UpdateLeaf(g, true))
+                    bool ok = UpdateLeaf(g, true);
+                    //M8-2 mount protocol: successful rewrites are remembered so
+                    //a later re-splice refreshes them over the stale blob data;
+                    //a failed rewrite (count change) invalidates the whole mount
+                    if (_leafLookup.TryGetValue(g, out LeafRange mlr) && mlr.mount != null)
+                    {
+                        if (ok)
+                            mlr.mount.rewritten.Add(g);
+                        else
+                            mlr.mount.invalid = true;
+                    }
+                    if (!ok)
                         _structureDirty = true;
                 }
                 for (int i = 0; i < _colorLeaves.Count; i++)
@@ -1096,6 +1123,16 @@ namespace FairyGUI
                         _maskedSubtrees++;
                         continue;
                     }
+                    //M8-2: a valid baked mount splices its precompiled stream
+                    //instead of walking the subtree (in-place streams only —
+                    //the baker's replica must always walk real content)
+                    if (_inPlace && c._fqsMount != null)
+                    {
+                        FqsMount fm = c._fqsMount;
+                        if (!fm.invalid && SpliceMount(c, fm, clipIndex, childGrayed))
+                            continue;
+                        fm.invalid = true; //failed splice: stop retrying every extract
+                    }
                     //slot promotion BEFORE the clip push: a moving clip owner's
                     //window must ride its own slot
                     uint childSlot = slotIndex;
@@ -1138,6 +1175,98 @@ namespace FairyGUI
             }
             slotIndex = (uint)idx;
             worldToLocal = c.cachedTransform.worldToLocalMatrix;
+        }
+
+        /// <summary>
+        /// M8-2: allocates a transform slot for a mounted container regardless
+        /// of hot state — baked quads live in mount-local space, so the slot IS
+        /// the placement (and mount movement becomes tier-1 for free).
+        /// </summary>
+        int AllocMountSlot(Container c)
+        {
+            if (_slotIndices.TryGetValue(c, out int idx))
+                return idx;
+            for (int i = 1; i < MaxTransformSlots; i++)
+            {
+                if (_slotOwners[i] == null)
+                {
+                    _slotIndices[c] = i;
+                    _slotOwners[i] = c;
+                    return i;
+                }
+            }
+            slotOverflow++;
+            return -1;
+        }
+
+        /// <summary>
+        /// M8-2: splices a mounted blob into the walk — quads copy with clip
+        /// remap/slot stamp/grayed OR, blob clip owners re-enter the ordinary
+        /// PushClip fold (live rects, slot-riding), and the whole mount becomes
+        /// ONE adjacency entry (unique key: internal order is frozen).
+        /// Returns false to fall back to the runtime walk.
+        /// </summary>
+        bool SpliceMount(Container c, FqsMount fm, uint parentClip, bool grayed)
+        {
+            int slot = AllocMountSlot(c);
+            if (slot < 0)
+                return false; //no slot left: runtime walk still renders correctly
+
+            uint rootClip = parentClip;
+            if (c.clipRect != null)
+                rootClip = PushClip(c, parentClip, (uint)slot);
+
+            var clipMap = new uint[fm.data.clips.Length];
+            clipMap[0] = rootClip;
+            for (int i = 1; i < fm.data.clips.Length; i++)
+            {
+                Container owner = fm.clipOwners[i];
+                if (owner == null || owner.isDisposed || owner.clipRect == null)
+                    return false;
+                clipMap[i] = PushClip(owner, clipMap[fm.data.clips[i].parentIndex], (uint)slot);
+            }
+
+            int stageStart = _staging.Count;
+            var quads = fm.data.quads;
+            for (int i = 0; i < quads.Length; i++)
+            {
+                QuadInstance q = quads[i];
+                q.transformIndex = (uint)slot;
+                q.clipIndex = clipMap[q.clipIndex];
+                if (grayed)
+                    q.flags |= QuadInstance.FlagGrayed;
+                _staging.Add(q);
+            }
+
+            //root-space AABB of the mount for the adjacency sort
+            Matrix4x4 m = _rootWorldToLocal * c.cachedTransform.localToWorldMatrix;
+            Vector4 lb = fm.localBounds;
+            Vector2 c0 = m.MultiplyPoint3x4(new Vector3(lb.x, lb.y, 0));
+            Vector2 c1 = m.MultiplyPoint3x4(new Vector3(lb.z, lb.y, 0));
+            Vector2 c2 = m.MultiplyPoint3x4(new Vector3(lb.x, lb.w, 0));
+            Vector2 c3 = m.MultiplyPoint3x4(new Vector3(lb.z, lb.w, 0));
+            Vector2 bmin = Vector2.Min(Vector2.Min(c0, c1), Vector2.Min(c2, c3));
+            Vector2 bmax = Vector2.Max(Vector2.Max(c0, c1), Vector2.Max(c2, c3));
+
+            _entries.Add(new AdjacencyEntry
+            {
+                key = fm, //unique: never merges with other entries
+                x0 = bmin.x, y0 = bmin.y, x1 = bmax.x, y1 = bmax.y,
+                payload = _pending.Count
+            });
+            _pending.Add(new PendingLeaf
+            {
+                mount = fm,
+                mountClipMap = clipMap,
+                stageStart = stageStart,
+                stageCount = quads.Length,
+                instanceable = true,
+                slotIndex = (uint)slot,
+                clipIndex = rootClip,
+                flags = grayed ? QuadInstance.FlagGrayed : 0u,
+                bakeAlpha = 1f,
+            });
+            return true;
         }
 
         /// <summary>
@@ -1584,6 +1713,14 @@ namespace FairyGUI
                     continue;
                 }
 
+                //M8-2: a mount splices its own frozen segments/leaves wholesale
+                if (leaf.mount != null)
+                {
+                    SpliceMountSegments(leaf, runIndex);
+                    seg = null; //never merge neighbors into spliced segments
+                    continue;
+                }
+
                 int texIdx = seg != null ? IndexOfOrAddTexture(seg, leaf.texture) : -1;
                 if (texIdx < 0)
                 {
@@ -1622,6 +1759,88 @@ namespace FairyGUI
                 _leaves.Add(range);
                 _leafLookup[range.graphics] = range;
             }
+        }
+
+        /// <summary>
+        /// M8-2: turns a mount's staged quads (already clip-remapped, slot-
+        /// stamped, grayed) into stream segments and live LeafRanges. Baked
+        /// leaves get full push-channel service: tier-2 rewrites re-read the
+        /// live meshes, the color tier rescales from bakedAlpha, and rewrites
+        /// recorded before a re-splice are re-queued so stale blob quads never
+        /// linger.
+        /// </summary>
+        void SpliceMountSegments(PendingLeaf leaf, int runIndex)
+        {
+            FqsMount fm = leaf.mount;
+            int quadBase = _quads.Count;
+            for (int q = 0; q < leaf.stageCount; q++)
+                _quads.Add(_staging[leaf.stageStart + q]);
+
+            var segs = fm.data.segs;
+            int segBase = _segments.Count;
+            for (int i = 0; i < segs.Length; i++)
+            {
+                Segment sg = TakeSegment();
+                sg.z = -0.5f * _segments.Count;
+                sg.start = quadBase + segs[i].start;
+                sg.count = segs[i].count;
+                sg.runIndex = runIndex;
+                sg.texCount = 0;
+                AddSegTex(sg, fm, segs[i].tex0);
+                AddSegTex(sg, fm, segs[i].tex1);
+                AddSegTex(sg, fm, segs[i].tex2);
+                AddSegTex(sg, fm, segs[i].tex3);
+                _segments.Add(sg);
+            }
+
+            var leaves = fm.data.leaves;
+            for (int i = 0; i < leaves.Length; i++)
+            {
+                FqsLeafRecord lr = leaves[i];
+                NGraphics g = fm.leafGraphics[i];
+                int segIndex = segBase;
+                for (int si = 0; si < segs.Length; si++)
+                {
+                    if (lr.start >= segs[si].start && lr.start < segs[si].start + segs[si].count)
+                    {
+                        segIndex = segBase + si;
+                        break;
+                    }
+                }
+                var range = new LeafRange
+                {
+                    graphics = g,
+                    start = quadBase + lr.start,
+                    count = lr.count,
+                    liveCount = lr.liveCount,
+                    bakedAlpha = lr.bakedAlpha,
+                    slotIndex = leaf.slotIndex,
+                    texIndexBits = _quads[quadBase + lr.start].flags & (3u << QuadInstance.TexIndexShift),
+                    segIndex = segIndex,
+                    flags = (lr.flags & ~(FqsLeafRecord.KindSdf | FqsLeafRecord.KindCurve)) | leaf.flags,
+                    clipIndex = leaf.mountClipMap[lr.clipIndex],
+                    sdf = (lr.flags & FqsLeafRecord.KindSdf) != 0,
+                    curve = false,
+                    mount = fm,
+                };
+                _leaves.Add(range);
+                _leafLookup[g] = range;
+
+                //self-heal staleness: content rewritten since the bake, or a
+                //color/alpha state differing from the baked value, refreshes
+                //through the ordinary push channels right after this extract
+                if (fm.rewritten.Contains(g))
+                    _QueueLeafUpdate(g);
+                else if (g._colorStale || g._currentAlpha != lr.bakedAlpha)
+                    _QueueLeafColor(g);
+            }
+        }
+
+        void AddSegTex(Segment sg, FqsMount fm, int texRef)
+        {
+            if (texRef < 0)
+                return;
+            sg.textures[sg.texCount++] = fm.textures[texRef];
         }
 
         static void StampIndices(List<QuadInstance> quads, int start, int count, uint clipIndex, uint slotIndex)

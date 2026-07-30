@@ -54,6 +54,7 @@ namespace FairyGUI
         DisplayObject _mask;
         //the instanced stream rooted at this container (in-place mode), if any
         internal InstancedUIStream _instancedStream;
+        internal FqsMount _fqsMount; //M8-2: baked quad-stream mount for this subtree
 
         /// <summary>
         /// v4 instanced rendering (design docs/design/instanced-renderer-v4.md):

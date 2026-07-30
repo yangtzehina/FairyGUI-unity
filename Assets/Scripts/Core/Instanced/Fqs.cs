@@ -434,14 +434,14 @@ namespace FairyGUI
             return null;
         }
 
-        const ulong FnvSeed = 0xcbf29ce484222325UL;
+        internal const ulong FnvSeed = 0xcbf29ce484222325UL;
 
         static ulong FnvStep(ulong h, int v)
         {
             return (h ^ (uint)v) * 0x100000001b3UL;
         }
 
-        static void MapPaths(Container c, ulong h,
+        internal static void MapPaths(Container c, ulong h,
             Dictionary<NGraphics, ulong> graphics, Dictionary<Container, ulong> containers)
         {
             int cnt = c.numChildren;
