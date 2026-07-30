@@ -116,8 +116,22 @@ Examples/CurveTextPoC 已归档删除（M9b 集成路径取代）。
 - **复合字形：已实现**。CollectOutline 递归解析 glyf composite（ARGS_ARE_XY + 单/双轴/2×2
   缩放全支持，仿射复合，深度≤4；点匹配对齐这种罕见构造保持 ghost 回退；镜像分量的绕向
   翻转由非零绕数规则天然吸收）。á é î õ ü À Ç ñ ß Ǆ ﬁ 全部解析+成像正确（原为空）。
-- 待做：TextField/BaseFont 真管线接入（采用门槛）；曲线数据纹理补顶点流后端（WebGL 收益
-  最大平台）；Vulkan 真机帧捕获（需实机）。
+- **TextField/BaseFont 真管线接入：已实现（同日）**。`CurveBaseFont : BaseFont`
+  （`CurveBaseFont.Register(name, ttfPath)` 一行注册，TextFormat.font 按名选用）：排版全走
+  标准 TextField 引擎（换行/UBB 颜色/上下标/下划线），渲染双路——原生路径
+  FairyGUI/CurveText shader（Text shader 全套裁剪/灰度/stencil 变体骨架 + fragment 曲线
+  覆盖，字形表走全局 buffer；uv 编码 x=glyphIndex×4+nu×2、y=裸 em Y，实心矩形 uv.x=-4，
+  PadEm=200 固定 em 边距保证解码确定性）；实例流路径经 NGraphics 逐字侧表
+  （StartDraw/DrawGlyph 镜像 GlyphQuad 含逐字颜色）发射 FlagCurveGlyph 实例，曲线叶获得
+  字形数 slack。顶点流后端/旋转叶自动降级为原生渲染 + 排序栅栏（不会把编码 mesh 重组进流）。
+  验证 9/9（shader 装配、侧表、UBB 逐字色进流、下划线实心 quad、slack tier-2、栅栏），
+  原生 GPU 成像截图 docs/review/curve-text-ab/basefont_native.png（UBB 红/黑/蓝 + 下划线 +
+  CJK/拉丁混排三档字号全对）。施工中修复：新字形烘焙后全局 buffer 未重传导致高索引字形
+  渲染实心盒——StartDraw 时 EnsureBuffers（量测阶段已烘焙完本字段全部字形）。
+  注意：FontManager.GetFont 对未注册名自动造 DynamicFont——注册判断要按类型不能按空值。
+  v1 限制：单字体文件（store 单例）、无粗体合成/描边/阴影、原生 shader 需 fragment SSBO
+  （WebGL 待数据纹理后端）。
+- 待做：曲线数据纹理补顶点流后端（WebGL 收益最大平台）；Vulkan 真机帧捕获（需实机）。
 
 ---
 

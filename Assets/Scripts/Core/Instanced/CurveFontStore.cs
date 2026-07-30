@@ -97,6 +97,12 @@ namespace FairyGUI
             sGlyphBuf = new ComputeBuffer(Mathf.Max(sGlyphMeta.Count, 1), 16);
             sGlyphBuf.SetData(sGlyphMeta);
             version++;
+            //native curve shader (batch 5, FairyGUI/CurveText): fragment-stage
+            //reads through globals so every material variant sees the tables
+            Shader.SetGlobalBuffer("_CurvePtsG", sPtsBuf);
+            Shader.SetGlobalBuffer("_CurveBandsG", sBandsBuf);
+            Shader.SetGlobalBuffer("_CurveBandIdxG", sBandIdxBuf);
+            Shader.SetGlobalBuffer("_CurveGlyphsG", sGlyphBuf);
         }
 
         public static void ReleaseBuffers()

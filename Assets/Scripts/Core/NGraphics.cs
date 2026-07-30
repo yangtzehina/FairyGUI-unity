@@ -102,6 +102,11 @@ namespace FairyGUI
         //renderer. The mark lives on the LEAF: dispose/reparent clears it from the
         //leaf side so recovery never depends on the batch's lifecycle.
         internal InstancedUIStream _instancedBy;
+        //curve text (batch 5): CurveBaseFont mirrors each built glyph quad here
+        //during StartDraw/DrawGlyph — the instanced stream emits analytic curve
+        //quads from this table instead of reassembling the encoded native mesh
+        internal System.Collections.Generic.List<CurveTextMesh.GlyphQuad> _curveGlyphs;
+
         //color tier (batch 3): claimed leaves defer native mesh color rewrites
         //(the renderer is off; the stream pushes instance colors directly);
         //_RestoreNativeColors settles the debt on release

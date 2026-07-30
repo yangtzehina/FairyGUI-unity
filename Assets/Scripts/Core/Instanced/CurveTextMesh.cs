@@ -18,7 +18,8 @@ namespace FairyGUI
         {
             public Rect rect;      //leaf-local, FairyGUI y-down px
             public Vector4 bbox;   //glyph em box (padded for AA)
-            public int glyphIndex;
+            public int glyphIndex; //-1: solid rect (underline/strikethrough)
+            public Color32 color;  //per-quad (UBB runs color independently)
         }
 
         public string text { get; private set; }
@@ -65,7 +66,8 @@ namespace FairyGUI
                         rect = new Rect(penX + bb.x * scale, baseline - bb.w * scale,
                             (bb.z - bb.x) * scale, (bb.w - bb.y) * scale),
                         bbox = bb,
-                        glyphIndex = g.index
+                        glyphIndex = g.index,
+                        color = color
                     });
                 }
                 penX += g.advance * scale;

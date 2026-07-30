@@ -1270,11 +1270,38 @@ namespace FairyGUI
                 return;
             }
 
-            //M9b: curve-text leaves emit one analytic glyph quad per character
+            //M9b/batch 5: curve-text leaves (standalone CurveTextMesh or a
+            //TextField on a CurveBaseFont) emit one analytic glyph quad per
+            //character. Where the stream cannot express them — vertex-stream
+            //backend, rotated leaves — the ENCODED native mesh must not be
+            //reassembled into the stream: the leaf keeps its native renderer
+            //(FairyGUI/CurveText) and becomes a sort barrier.
+            bool curveLeaf = (graphics.meshFactory is CurveTextMesh cmProbe && cmProbe.glyphQuads.Count > 0)
+                || (graphics._curveGlyphs != null && graphics._curveGlyphs.Count > 0);
+            if (curveLeaf && (_vertexPath
+                || Mathf.Abs(m.m01) > 1e-4f || Mathf.Abs(m.m10) > 1e-4f))
+            {
+                p.stageCount = 0;
+                p.instanceable = false;
+                _entries.Add(new AdjacencyEntry
+                {
+                    key = null,
+                    x0 = bmin.x, y0 = bmin.y, x1 = bmax.x, y1 = bmax.y,
+                    payload = _pending.Count
+                });
+                _pending.Add(p);
+                return;
+            }
             int curveCount = EmitCurveQuads(graphics, m, _staging, flags & QuadInstance.FlagGrayed);
             if (curveCount > 0)
             {
-                p.stageCount = curveCount;
+                //glyph-count slack, same as alpha-texture text (batch 2): pad to
+                //the next power of two with degenerate quads so length changes
+                //stay on the tier-2 path
+                int curveSlack = Mathf.NextPowerOfTwo(curveCount);
+                for (int k = curveCount; k < curveSlack; k++)
+                    _staging.Add(default);
+                p.stageCount = curveSlack;
                 p.instanceable = true;
                 p.curve = true;
                 StampIndices(_staging, p.stageStart, p.stageCount, clipIndex, slotIndex);
@@ -1440,32 +1467,62 @@ namespace FairyGUI
         /// </summary>
         int EmitCurveQuads(NGraphics graphics, Matrix4x4 m, List<QuadInstance> dst, uint extraFlags)
         {
-            if (_vertexPath || !(graphics.meshFactory is CurveTextMesh ctm) || ctm.glyphQuads.Count == 0)
+            if (_vertexPath)
+                return 0;
+            IReadOnlyList<CurveTextMesh.GlyphQuad> quads;
+            if (graphics.meshFactory is CurveTextMesh ctm)
+                quads = ctm.glyphQuads;
+            else if (graphics._curveGlyphs != null)
+                quads = graphics._curveGlyphs; //batch 5: CurveBaseFont side table
+            else
+                return 0;
+            if (quads.Count == 0)
                 return 0;
             if (Mathf.Abs(m.m01) > 1e-4f || Mathf.Abs(m.m10) > 1e-4f)
                 return 0;
 
-            Color col = ctm.color;
-            col.a *= graphics._currentAlpha;
+            float alpha = graphics._currentAlpha;
             int n = 0;
-            foreach (var gq in ctm.glyphQuads)
+            for (int qi = 0; qi < quads.Count; qi++)
             {
+                CurveTextMesh.GlyphQuad gq = quads[qi];
                 Vector2 pa = m.MultiplyPoint3x4(new Vector3(gq.rect.xMin, -gq.rect.yMax, 0));
                 Vector2 pb = m.MultiplyPoint3x4(new Vector3(gq.rect.xMax, -gq.rect.yMin, 0));
                 Vector2 mn = Vector2.Min(pa, pb) + _drawOffset;
                 Vector2 sz = Vector2.Max(pa, pb) - Vector2.Min(pa, pb);
-                Vector4 bb = gq.bbox;
-                dst.Add(new QuadInstance
+                Color col = gq.color;
+                col.a *= alpha;
+                if (gq.glyphIndex < 0)
                 {
-                    rect = new Vector4(mn.x, mn.y, sz.x, sz.y),
-                    //quad corner (0,0) sits at the SMALLEST unity y = glyph bottom
-                    //(em bbox min y), so the interpolated uv is the em position
-                    uvA = new Vector4(bb.x, bb.y, bb.z, bb.y),
-                    uvB = new Vector4(bb.x, bb.w, bb.z, bb.w),
-                    color = col,
-                    flags = QuadInstance.FlagCurveGlyph | extraFlags,
-                    padding = (uint)gq.glyphIndex
-                });
+                    //solid rect (underline/strikethrough): plain quad sampling
+                    //the leaf texture's center (Empty/white for curve fonts)
+                    Rect uvr = graphics.texture.uvRect;
+                    var cuv = new Vector4((uvr.xMin + uvr.xMax) * 0.5f, (uvr.yMin + uvr.yMax) * 0.5f,
+                        (uvr.xMin + uvr.xMax) * 0.5f, (uvr.yMin + uvr.yMax) * 0.5f);
+                    dst.Add(new QuadInstance
+                    {
+                        rect = new Vector4(mn.x, mn.y, sz.x, sz.y),
+                        uvA = cuv,
+                        uvB = cuv,
+                        color = col,
+                        flags = extraFlags
+                    });
+                }
+                else
+                {
+                    Vector4 bb = gq.bbox;
+                    dst.Add(new QuadInstance
+                    {
+                        rect = new Vector4(mn.x, mn.y, sz.x, sz.y),
+                        //quad corner (0,0) sits at the SMALLEST unity y = glyph bottom
+                        //(em bbox min y), so the interpolated uv is the em position
+                        uvA = new Vector4(bb.x, bb.y, bb.z, bb.y),
+                        uvB = new Vector4(bb.x, bb.w, bb.z, bb.w),
+                        color = col,
+                        flags = QuadInstance.FlagCurveGlyph | extraFlags,
+                        padding = (uint)gq.glyphIndex
+                    });
+                }
                 n++;
             }
             return n;
@@ -1601,8 +1658,10 @@ namespace FairyGUI
                 }
                 else if (range.curve)
                 {
+                    //curve leaves carry glyph-count slack (batch 5), so any
+                    //length within the reserved range stays tier-2
                     rebuilt = EmitCurveQuads(graphics, m, sLeafScratch, range.flags & QuadInstance.FlagGrayed);
-                    if (rebuilt != range.count)
+                    if (rebuilt == 0 || rebuilt > range.count)
                         return false;
                 }
                 else
