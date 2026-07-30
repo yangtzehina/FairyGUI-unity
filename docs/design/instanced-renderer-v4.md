@@ -131,7 +131,16 @@ Examples/CurveTextPoC 已归档删除（M9b 集成路径取代）。
   注意：FontManager.GetFont 对未注册名自动造 DynamicFont——注册判断要按类型不能按空值。
   v1 限制：单字体文件（store 单例）、无粗体合成/描边/阴影、原生 shader 需 fragment SSBO
   （WebGL 待数据纹理后端）。
-- 待做：曲线数据纹理补顶点流后端（WebGL 收益最大平台）；Vulkan 真机帧捕获（需实机）。
+- **曲线数据纹理：已实现（同日）**。四张曲线表改为 RGBAFloat 数据纹理（宽 1024 线性寻址：
+  点表 2 texel/曲线、带表 1 texel/带、索引表 4 索引/texel、bbox 1 texel/字形），
+  `Shader.SetGlobalTexture` 一份供三个消费者——数学收敛到 FairyGUI-CurveCommon.cginc 单源。
+  效果：FairyGUI/CurveText 降到 target 3.5、去平台门（WebGL2/GLES3.0 texelFetch 即可）；
+  attribs shader 补 mode-3（glyphIndex 经 QuadVertex.sdfRadii 四字节重组），顶点流后端
+  解除曲线栅栏——**WebGL 配置下曲线文本全实例化**。实测（forceVertexPath）：白底+三段
+  富文本合 1 段 97 quads 全认领，像素成像正确（docs/review/curve-text-ab/vertexpath_curve.png），
+  glyph slack/UBB 逐字色照常。验证 10/10（新增 f10 顶点路径认领、f11 实例曲线像素）。
+  注意：本机顶点路径渲染健康，曲线文本自此可在编辑器内做流内视觉验证。
+- 待做：Vulkan 真机帧捕获 + fragment 成本实测（需实机，文本线唯一遗留）。
 
 ---
 

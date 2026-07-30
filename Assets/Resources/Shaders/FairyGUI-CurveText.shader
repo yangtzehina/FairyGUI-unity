@@ -4,8 +4,8 @@
 // coverage from the CurveFontStore tables (bound as global buffers by
 // EnsureBuffers). Vertex uv encodes x = glyphIndex*4 + nu*2 (nu = horizontal
 // 0..1 across the glyph's PADDED em box; pad = CurveBaseFont.PadEm font units)
-// and y = raw em Y; uv.x < 0 marks solid rects (underline). Requires
-// fragment-stage StructuredBuffer — WebGL waits on the data-texture backend.
+// and y = raw em Y; uv.x < 0 marks solid rects (underline). The tables are
+// RGBAFloat data textures (batch 5) — no SSBO, runs on WebGL2/GLES3.0.
 Shader "FairyGUI/CurveText"
 {
     Properties
@@ -58,17 +58,12 @@ Shader "FairyGUI/CurveText"
                 #pragma multi_compile _ CLIPPED SOFT_CLIPPED
                 #pragma vertex vert
                 #pragma fragment frag
-                #pragma target 4.5
-                #pragma only_renderers d3d11 metal vulkan
+                #pragma target 3.5
 
                 #include "UnityCG.cginc"
-
-                //CurveFontStore tables (global): quadratic outline points, 8
-                //band lists per glyph (base = glyphIndex*8), banding bboxes
-                StructuredBuffer<float2> _CurvePtsG;
-                StructuredBuffer<uint2> _CurveBandsG;
-                StructuredBuffer<uint> _CurveBandIdxG;
-                StructuredBuffer<float4> _CurveGlyphsG;
+                //tables as data textures (batch 5): texelFetch everywhere,
+                //no SSBO — this shader now runs on WebGL2/GLES3.0 too
+                #include "FairyGUI-CurveCommon.cginc"
 
                 #define CURVE_PAD 200.0 //must match CurveBaseFont.PadEm
 
@@ -128,80 +123,6 @@ Shader "FairyGUI/CurveText"
                     return o;
                 }
 
-                float2 evalQ(float2 a, float2 b, float2 cpt, float t)
-                {
-                    float it = 1.0 - t;
-                    return it * it * a + 2.0 * it * t * b + t * t * cpt;
-                }
-
-                //identical math to FairyGUI-InstancedUI.shader's curveCoverage:
-                //winding by Lengyel's sign-class table, AA from nearest distance
-                float curveCoverage(float2 gp, uint glyphIndex)
-                {
-                    float4 bbox = _CurveGlyphsG[glyphIndex];
-                    float bh = max(bbox.w - bbox.y, 1.0);
-                    int band = clamp((int)((gp.y - bbox.y) / bh * 8.0), 0, 7);
-                    uint2 bc = _CurveBandsG[glyphIndex * 8 + (uint)band];
-
-                    int winding = 0;
-                    float best = 1e12;
-                    for (uint k = 0; k < bc.y; k++)
-                    {
-                        uint ci = _CurveBandIdxG[bc.x + k];
-                        float2 A = _CurvePtsG[ci * 3 + 0] - gp;
-                        float2 B = _CurvePtsG[ci * 3 + 1] - gp;
-                        float2 C = _CurvePtsG[ci * 3 + 2] - gp;
-
-                        uint code = (0x2E74u >> (((A.y > 0.0) ? 2u : 0u)
-                            + ((B.y > 0.0) ? 4u : 0u) + ((C.y > 0.0) ? 8u : 0u))) & 3u;
-                        if (code != 0u)
-                        {
-                            float ay = A.y - 2.0 * B.y + C.y;
-                            float by = A.y - B.y;
-                            float cy = A.y;
-                            float t1, t2;
-                            if (abs(ay) > 1e-6)
-                            {
-                                float dsc = sqrt(max(by * by - ay * cy, 0.0));
-                                t1 = (by - dsc) / ay;
-                                t2 = (by + dsc) / ay;
-                            }
-                            else
-                                t1 = t2 = cy / (2.0 * by);
-                            if ((code & 1u) != 0u && evalQ(A, B, C, t1).x > 0.0)
-                                winding += 1;
-                            if (code > 1u && evalQ(A, B, C, t2).x > 0.0)
-                                winding -= 1;
-                        }
-
-                        float bt = 0.0;
-                        float bd = dot(A, A);
-                        [unroll]
-                        for (int sIdx = 1; sIdx <= 6; sIdx++)
-                        {
-                            float t = sIdx / 6.0;
-                            float2 q = evalQ(A, B, C, t);
-                            float dd = dot(q, q);
-                            if (dd < bd) { bd = dd; bt = t; }
-                        }
-                        [unroll]
-                        for (int it2 = 0; it2 < 2; it2++)
-                        {
-                            float2 q = evalQ(A, B, C, bt);
-                            float2 dq = 2.0 * ((B - A) + (A - 2.0 * B + C) * bt);
-                            float denom = dot(dq, dq);
-                            if (denom > 1e-9)
-                                bt = clamp(bt - dot(q, dq) / denom, 0.0, 1.0);
-                        }
-                        float2 qf = evalQ(A, B, C, bt);
-                        best = min(best, dot(qf, qf));
-                    }
-
-                    float dist = sqrt(best);
-                    float emPerPx = max(length(float2(ddx(gp.x), ddy(gp.x))), 1e-6);
-                    float signedPx = (winding != 0 ? dist : -dist) / emPerPx;
-                    return saturate(0.5 + signedPx);
-                }
 
                 fixed4 frag (v2f i) : SV_Target
                 {
@@ -214,7 +135,7 @@ Shader "FairyGUI/CurveText"
                         float gi = floor(gx);
                         uint glyphIndex = (uint)gi;
                         float nu = (gx - gi) * 2.0;
-                        float4 bbox = _CurveGlyphsG[glyphIndex];
+                        float4 bbox = CURVE_LOAD(_CurveGlyphsTex, glyphIndex);
                         float pbx = bbox.x - CURVE_PAD;
                         float pbz = bbox.z + CURVE_PAD;
                         float2 gp = float2(pbx + nu * (pbz - pbx), i.texcoord.y);

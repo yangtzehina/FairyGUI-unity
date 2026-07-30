@@ -30,6 +30,9 @@ Shader "FairyGUI/InstancedUIAttribs"
             #pragma fragment frag
             #pragma target 3.5
             #include "UnityCG.cginc"
+            //batch 5: curve-text tables as data textures — the vertex-stream
+            //backend renders curve glyphs too (WebGL2/GLES3.0 compatible)
+            #include "FairyGUI-CurveCommon.cginc"
 
             #define MAX_CLIPS 16
             float4 _ClipRects[MAX_CLIPS]; //xMin yMin xMax yMax, unscrolled stream-local
@@ -100,8 +103,15 @@ Shader "FairyGUI/InstancedUIAttribs"
                 o.clipSoft = _ClipSofts[clipIndex];
                 o.sdfPos = float4(c * a.rect.zw, a.rect.zw * 0.5);
                 o.sdfRadii = a.sdfRadii;
-                float mode = (flags & 2) != 0 ? 1.0 : ((flags & 4) != 0 ? 2.0 : 0.0);
-                o.sdfMW = float3(a.misc.w, mode, (flags >> 16) & 3);
+                float mode = (flags & 2) != 0 ? 1.0 : ((flags & 4) != 0 ? 2.0
+                    : ((flags & 8) != 0 ? 3.0 : 0.0));
+                //mode 3 (curve glyph): sdfRadii carries the glyph index bytes
+                //(QuadVertex decodes instance padding into four 0-255 floats)
+                float mwx = mode == 3.0
+                    ? a.sdfRadii.x + a.sdfRadii.y * 256.0 + a.sdfRadii.z * 65536.0
+                        + a.sdfRadii.w * 16777216.0
+                    : a.misc.w;
+                o.sdfMW = float3(mwx, mode, (flags >> 16) & 3);
                 o.color = a.color;
                 return o;
             }
@@ -162,8 +172,10 @@ Shader "FairyGUI/InstancedUIAttribs"
                     fixed grey = dot(col.rgb, fixed3(0.299, 0.587, 0.114));
                     col.rgb = fixed3(grey, grey, grey);
                 }
-                if (i.sdfMW.y > 0.5)
-                    col.a *= sdfCoverage(i.sdfPos, i.sdfRadii, i.sdfMW);
+                if (i.sdfMW.y > 2.5)
+                    col.a *= curveCoverage(i.uv, (uint)(i.sdfMW.x + 0.5)); //uv = em-space pos
+                else if (i.sdfMW.y > 0.5)
+                    col.a *= sdfCoverage(i.sdfPos, i.sdfRadii, i.sdfMW.xy);
                 col.a *= softFactor(i.scrolledPos, _ClipRect, _ClipSoft);
                 col.a *= softFactor(i.rawPos.xy, i.clipRect, i.clipSoft);
                 return col;

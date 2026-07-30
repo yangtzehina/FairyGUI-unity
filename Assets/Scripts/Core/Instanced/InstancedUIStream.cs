@@ -1278,8 +1278,7 @@ namespace FairyGUI
             //(FairyGUI/CurveText) and becomes a sort barrier.
             bool curveLeaf = (graphics.meshFactory is CurveTextMesh cmProbe && cmProbe.glyphQuads.Count > 0)
                 || (graphics._curveGlyphs != null && graphics._curveGlyphs.Count > 0);
-            if (curveLeaf && (_vertexPath
-                || Mathf.Abs(m.m01) > 1e-4f || Mathf.Abs(m.m10) > 1e-4f))
+            if (curveLeaf && (Mathf.Abs(m.m01) > 1e-4f || Mathf.Abs(m.m10) > 1e-4f))
             {
                 p.stageCount = 0;
                 p.instanceable = false;
@@ -1467,8 +1466,6 @@ namespace FairyGUI
         /// </summary>
         int EmitCurveQuads(NGraphics graphics, Matrix4x4 m, List<QuadInstance> dst, uint extraFlags)
         {
-            if (_vertexPath)
-                return 0;
             IReadOnlyList<CurveTextMesh.GlyphQuad> quads;
             if (graphics.meshFactory is CurveTextMesh ctm)
                 quads = ctm.glyphQuads;
@@ -1860,8 +1857,10 @@ namespace FairyGUI
                 //stream-level uniforms: push property blocks only when something
                 //they carry actually changed (batch 2)
                 int curveVer = -1;
-                if (!_vertexPath && CurveFontStore.loaded)
+                if (CurveFontStore.loaded)
                 {
+                    //data textures (batch 5): both backends read the tables as
+                    //globals — refresh them when new glyphs were baked
                     CurveFontStore.EnsureBuffers();
                     curveVer = CurveFontStore.version;
                 }
@@ -1934,8 +1933,6 @@ namespace FairyGUI
                             seg.props.SetVectorArray("_ClipRects", _clipRectArr);
                             seg.props.SetVectorArray("_ClipSofts", _clipSoftArr);
                         }
-                        else if (curveVer >= 0)
-                            CurveFontStore.Bind(seg.props);
                         seg.renderer.SetPropertyBlock(seg.props);
                     }
                 }

@@ -38,7 +38,17 @@ namespace FairyGUI
         static readonly List<uint> sBandIdx = new List<uint>();
         static readonly List<Vector4> sGlyphMeta = new List<Vector4>();
 
-        static ComputeBuffer sPtsBuf, sBandsBuf, sBandIdxBuf, sGlyphBuf;
+        //batch 5 data textures: the four tables live in RGBAFloat textures so
+        //every backend (incl. WebGL2/GLES3, no SSBO anywhere) fetches them with
+        //texelFetch. Layout, addressed as linear texel index i -> (i & 1023,
+        //i >> 10) at width 1024:
+        //  pts:     2 texels per curve  — (A.x A.y B.x B.y), (C.x C.y - -)
+        //  bands:   1 texel per band    — (start count - -), glyph*8 + band
+        //  bandIdx: 4 indices per texel — index i at texel i>>2, channel i&3
+        //  glyphs:  1 texel per glyph   — banding bbox
+        const int TexW = 1024;
+        static Texture2D sPtsTex, sBandsTex, sBandIdxTex, sGlyphTex;
+        static float[] sTexScratch;
         static bool sDirty;
 
         /// <summary>Bumps whenever the GPU buffers are recreated.</summary>
@@ -70,47 +80,102 @@ namespace FairyGUI
             return g;
         }
 
-        /// <summary>Binds the store's buffers; call per frame per property block.</summary>
+        /// <summary>Kept for callers that bound per-property-block buffers before
+        /// the data-texture backend; the tables are globals now.</summary>
         public static void Bind(MaterialPropertyBlock props)
         {
             EnsureBuffers();
-            if (sPtsBuf == null)
-                return;
-            props.SetBuffer("_CurvePts", sPtsBuf);
-            props.SetBuffer("_CurveBands", sBandsBuf);
-            props.SetBuffer("_CurveBandIdx", sBandIdxBuf);
-            props.SetBuffer("_CurveGlyphs", sGlyphBuf);
         }
 
+        static Texture2D EnsureTex(ref Texture2D tex, int texels)
+        {
+            int h = Mathf.Max(1, (texels + TexW - 1) / TexW);
+            if (tex == null || tex.height < h)
+            {
+                if (tex != null)
+                    UnityEngine.Object.Destroy(tex);
+                tex = new Texture2D(TexW, h, TextureFormat.RGBAFloat, false, true);
+                tex.name = "CurveFontTable";
+                tex.hideFlags = HideFlags.DontSave;
+                tex.filterMode = FilterMode.Point;
+                tex.wrapMode = TextureWrapMode.Clamp;
+            }
+            return tex;
+        }
+
+        static float[] Scratch(Texture2D tex)
+        {
+            int n = tex.width * tex.height * 4;
+            if (sTexScratch == null || sTexScratch.Length < n)
+                sTexScratch = new float[n];
+            System.Array.Clear(sTexScratch, 0, n);
+            return sTexScratch;
+        }
+
+        static void Upload(Texture2D tex, float[] data)
+        {
+            tex.SetPixelData(data, 0);
+            tex.Apply(false, false);
+        }
+
+        /// <summary>(Re)builds the data textures when new glyphs were baked.</summary>
         public static void EnsureBuffers()
         {
             if (!sDirty || sGlyphMeta.Count == 0)
                 return;
             sDirty = false;
-            ReleaseBuffers();
-            sPtsBuf = new ComputeBuffer(Mathf.Max(sPts.Count, 1), 8);
-            sPtsBuf.SetData(sPts);
-            sBandsBuf = new ComputeBuffer(Mathf.Max(sBands.Count, 1), 8);
-            sBandsBuf.SetData(sBands);
-            sBandIdxBuf = new ComputeBuffer(Mathf.Max(sBandIdx.Count, 1), 4);
-            sBandIdxBuf.SetData(sBandIdx);
-            sGlyphBuf = new ComputeBuffer(Mathf.Max(sGlyphMeta.Count, 1), 16);
-            sGlyphBuf.SetData(sGlyphMeta);
+
+            int nCurves = sPts.Count / 3;
+            var tex = EnsureTex(ref sPtsTex, Mathf.Max(nCurves * 2, 1));
+            float[] d = Scratch(tex);
+            for (int c = 0; c < nCurves; c++)
+            {
+                int b = c * 8;
+                d[b + 0] = sPts[c * 3].x;     d[b + 1] = sPts[c * 3].y;
+                d[b + 2] = sPts[c * 3 + 1].x; d[b + 3] = sPts[c * 3 + 1].y;
+                d[b + 4] = sPts[c * 3 + 2].x; d[b + 5] = sPts[c * 3 + 2].y;
+            }
+            Upload(tex, d);
+
+            tex = EnsureTex(ref sBandsTex, Mathf.Max(sBands.Count, 1));
+            d = Scratch(tex);
+            for (int i = 0; i < sBands.Count; i++)
+            {
+                d[i * 4] = sBands[i].x;
+                d[i * 4 + 1] = sBands[i].y;
+            }
+            Upload(tex, d);
+
+            tex = EnsureTex(ref sBandIdxTex, Mathf.Max((sBandIdx.Count + 3) / 4, 1));
+            d = Scratch(tex);
+            for (int i = 0; i < sBandIdx.Count; i++)
+                d[i] = sBandIdx[i];
+            Upload(tex, d);
+
+            tex = EnsureTex(ref sGlyphTex, Mathf.Max(sGlyphMeta.Count, 1));
+            d = Scratch(tex);
+            for (int i = 0; i < sGlyphMeta.Count; i++)
+            {
+                d[i * 4] = sGlyphMeta[i].x;     d[i * 4 + 1] = sGlyphMeta[i].y;
+                d[i * 4 + 2] = sGlyphMeta[i].z; d[i * 4 + 3] = sGlyphMeta[i].w;
+            }
+            Upload(tex, d);
+
             version++;
-            //native curve shader (batch 5, FairyGUI/CurveText): fragment-stage
-            //reads through globals so every material variant sees the tables
-            Shader.SetGlobalBuffer("_CurvePtsG", sPtsBuf);
-            Shader.SetGlobalBuffer("_CurveBandsG", sBandsBuf);
-            Shader.SetGlobalBuffer("_CurveBandIdxG", sBandIdxBuf);
-            Shader.SetGlobalBuffer("_CurveGlyphsG", sGlyphBuf);
+            //one set of globals serves all three consumers: the buffer-path
+            //instance shader, the vertex-stream shader and FairyGUI/CurveText
+            Shader.SetGlobalTexture("_CurvePtsTex", sPtsTex);
+            Shader.SetGlobalTexture("_CurveBandsTex", sBandsTex);
+            Shader.SetGlobalTexture("_CurveBandIdxTex", sBandIdxTex);
+            Shader.SetGlobalTexture("_CurveGlyphsTex", sGlyphTex);
         }
 
         public static void ReleaseBuffers()
         {
-            sPtsBuf?.Release(); sPtsBuf = null;
-            sBandsBuf?.Release(); sBandsBuf = null;
-            sBandIdxBuf?.Release(); sBandIdxBuf = null;
-            sGlyphBuf?.Release(); sGlyphBuf = null;
+            if (sPtsTex != null) { UnityEngine.Object.Destroy(sPtsTex); sPtsTex = null; }
+            if (sBandsTex != null) { UnityEngine.Object.Destroy(sBandsTex); sBandsTex = null; }
+            if (sBandIdxTex != null) { UnityEngine.Object.Destroy(sBandIdxTex); sBandIdxTex = null; }
+            if (sGlyphTex != null) { UnityEngine.Object.Destroy(sGlyphTex); sGlyphTex = null; }
         }
 
         // ---------- TTF parsing (glyf quadratics; PoC origin: Examples/CurveTextPoC, archived in batch 4 — M9b integrated this path) ----------
