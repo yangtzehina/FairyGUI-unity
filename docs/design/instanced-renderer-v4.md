@@ -104,6 +104,21 @@ DisplayObject 树（不动）
 （阈值 mean<1.5、badPx<0.5%），构建入口 `FairyGUIEditor.InstancedCIBuild.BuildWebGL`。
 Examples/CurveTextPoC 已归档删除（M9b 集成路径取代）。
 
+**批 5 · 文本线（2026-07-25 起）**：
+- **CJK 正文 A/B 一票项：通过**。同字体（Arial Unicode）同字号、原生动态字体（设备像素直挂
+  Stage）vs 曲线管线（shader 数学 CPU 精确镜像——本机编辑器 buffer 路径不出图的怪癖下的
+  等价验证途径），12/14/18/24/32px 五档：曲线版在小字号（12-18px）显著优于原生——更黑
+  （墨量 +24%）、笔画分明，原生灰糊粘连；24px+ 两者接近。证据 docs/review/curve-text-ab/
+  （cjk_ab.png 全档、cjk_ab_zoom.png 小字号 4×、accent_ab.png 复合字形）。
+  70/70 汉字为简单 glyf 直接解析。复杂度实测：正文均值 ~86 带条目/字（≈11 曲线/带），
+  极端字形（龘）303、最坏单带 58 曲线/像素循环——GPU 成本随字形密度增长，真机 fragment
+  实测（阶梯 5）仍是发布前置。
+- **复合字形：已实现**。CollectOutline 递归解析 glyf composite（ARGS_ARE_XY + 单/双轴/2×2
+  缩放全支持，仿射复合，深度≤4；点匹配对齐这种罕见构造保持 ghost 回退；镜像分量的绕向
+  翻转由非零绕数规则天然吸收）。á é î õ ü À Ç ñ ß Ǆ ﬁ 全部解析+成像正确（原为空）。
+- 待做：TextField/BaseFont 真管线接入（采用门槛）；曲线数据纹理补顶点流后端（WebGL 收益
+  最大平台）；Vulkan 真机帧捕获（需实机）。
+
 ---
 
 ## 4. 数据模型

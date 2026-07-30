@@ -12,7 +12,7 @@ namespace FairyGUI
     /// (per glyph: band table base is glyphIndex*8 into _CurveBands, bbox in em).
     ///
     /// Buffers rebuild lazily when new characters are baked; version lets renderers
-    /// rebind. PoC-stage limits: one font, simple glyphs only (composites render
+    /// rebind. PoC-stage limits: one font (composites supported since batch 5; point-matching alignment still renders
     /// as empty), CFF fonts unsupported.
     /// </summary>
     public static class CurveFontStore
@@ -193,14 +193,12 @@ namespace FairyGUI
             if (gl <= 0)
                 return info;
             int p = tGlyf + go;
-            int contours = S16(p);
-            if (contours < 0)
-                return info; //composite: no outline in the PoC-stage store
+            //the glyf header carries the bbox for simple AND composite glyphs
+            Vector4 bbox = new Vector4(S16(p + 2), S16(p + 4), S16(p + 6), S16(p + 8));
 
             var curvePts = new List<Vector2>();
-            ParseSimple(p, contours, curvePts, out Vector4 bbox);
-            if (curvePts.Count == 0)
-                return info;
+            if (!CollectOutline(gid, curvePts, 1, 0, 0, 1, 0, 0, 0) || curvePts.Count == 0)
+                return info; //unsupported construct (point-matching align): ghost fallback
 
             //append to the shared tables: curves, then 8 bands over the bbox
             int curveBase = sPts.Count / 3;
@@ -225,6 +223,107 @@ namespace FairyGUI
             sGlyphMeta.Add(bbox);
             sDirty = true;
             return info;
+        }
+
+        static float F2Dot14(int o)
+        {
+            return S16(o) / 16384f;
+        }
+
+        /// <summary>
+        /// Collects a glyph's quadratic outline in compound space, recursing into
+        /// composite components (batch 5): each component contributes its simple
+        /// outline transformed by the accumulated affine (x' = a·x + c·y + e,
+        /// y' = b·x + d·y + f). Offsets are compound-space (the common MS/Apple
+        /// default); the rare point-matching alignment returns false → the caller
+        /// keeps the native ghost fallback. Mirrored components flip contour
+        /// orientation, which the nonzero winding rule absorbs.
+        /// </summary>
+        static bool CollectOutline(int gid, List<Vector2> outPts,
+            float a, float b, float c, float d, float e, float f, int depth)
+        {
+            if (depth > 4)
+                return false;
+            int go, gl;
+            if (sIndexToLoc == 0)
+            {
+                go = U16(tLoca + gid * 2) * 2;
+                gl = U16(tLoca + gid * 2 + 2) * 2 - go;
+            }
+            else
+            {
+                go = (int)U32(tLoca + gid * 4);
+                gl = (int)U32(tLoca + gid * 4 + 4) - go;
+            }
+            if (gl <= 0)
+                return true; //empty component (e.g. space carrier) is fine
+            int p = tGlyf + go;
+            int contours = S16(p);
+
+            if (contours >= 0)
+            {
+                bool identity = a == 1 && b == 0 && c == 0 && d == 1 && e == 0 && f == 0;
+                int start = outPts.Count;
+                ParseSimple(p, contours, outPts, out _);
+                if (!identity)
+                {
+                    for (int i = start; i < outPts.Count; i++)
+                    {
+                        Vector2 pt = outPts[i];
+                        outPts[i] = new Vector2(a * pt.x + c * pt.y + e, b * pt.x + d * pt.y + f);
+                    }
+                }
+                return true;
+            }
+
+            var data = sFontData;
+            int o = p + 10;
+            while (true)
+            {
+                int flags = U16(o); o += 2;
+                int cgid = U16(o); o += 2;
+                float dx, dy;
+                if ((flags & 0x0001) != 0) //ARG_1_AND_2_ARE_WORDS
+                {
+                    dx = S16(o); o += 2;
+                    dy = S16(o); o += 2;
+                }
+                else
+                {
+                    dx = (sbyte)data[o]; o++;
+                    dy = (sbyte)data[o]; o++;
+                }
+                if ((flags & 0x0002) == 0) //not ARGS_ARE_XY_VALUES: point matching
+                    return false;
+
+                float ca = 1, cb = 0, cc = 0, cd = 1;
+                if ((flags & 0x0008) != 0) //WE_HAVE_A_SCALE
+                {
+                    ca = cd = F2Dot14(o); o += 2;
+                }
+                else if ((flags & 0x0040) != 0) //X_AND_Y_SCALE
+                {
+                    ca = F2Dot14(o); o += 2;
+                    cd = F2Dot14(o); o += 2;
+                }
+                else if ((flags & 0x0080) != 0) //TWO_BY_TWO
+                {
+                    ca = F2Dot14(o); cb = F2Dot14(o + 2);
+                    cc = F2Dot14(o + 4); cd = F2Dot14(o + 6);
+                    o += 8;
+                }
+
+                //full = parent ∘ (component matrix, compound-space offset)
+                float na = a * ca + c * cb, nb = b * ca + d * cb;
+                float nc = a * cc + c * cd, nd = b * cc + d * cd;
+                float ne = a * dx + c * dy + e, nf = b * dx + d * dy + f;
+                if (!CollectOutline(cgid, outPts, na, nb, nc, nd, ne, nf, depth + 1))
+                    return false;
+
+                if ((flags & 0x0020) == 0) //MORE_COMPONENTS
+                    break;
+            }
+            return true;
         }
 
         static void ParseSimple(int p, int contours, List<Vector2> outPts, out Vector4 bbox)
