@@ -5,7 +5,8 @@ using System.Text;
 /// <summary>
 /// Runs every instanced-renderer validation suite in regression order —
 /// M4 scenarios 19, batch1 14, batch2 8, batch3 19, batch3d 10, batch4 12,
-/// plus the MVVM reentrancy 11 — and aggregates the verdict. Invoke
+/// batch5 curve text 10, plus the MVVM reentrancy 11 — and aggregates the
+/// verdict. Invoke
 /// InstancedValidationAll.Run() from a Play mode eval; the first line is
 /// "ALL RESULT pass=N fail=N".
 /// </summary>
@@ -47,6 +48,7 @@ public static class InstancedValidationAll
         RunSuite("batch3", InstancedBatch3Suite.Run);
         RunSuite("batch3d", InstancedBatch3dSuite.Run);
         RunSuite("batch4", InstancedBatch4Suite.Run);
+        RunSuite("batch5_curvetext", InstancedBatch5Suite.Run);
         RunSuite("mvvm_reentrancy", BinderReentrancyCheck.Run);
 
         sb.Insert(0, $"ALL RESULT pass={pass} fail={fail}\n\n");

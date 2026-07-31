@@ -103,6 +103,11 @@ GetVertices/GetUVs/GetColors/GetTriangles + QuadReassembler 重组。为一个�
 
 ## 执行结果（2026-07-25）
 
+> 本节所述的逐项验证已固化为仓库内脚本：
+> `Assets/Examples/InstancedPoC/Validation/InstancedBatch3Suite.cs`
+> （c1-c6 / t1-t10 / e1-e3，跑法见同目录 `README.md`）。
+
+
 全部三步落地，批 3 专项 19/19：颜色 tier c1-c6（fade/tint 零重编译、量化 quad 颜色、释放后
 native 像素还原）、transform 槽 t1-t11（首动一次重编译入槽、后续移动/缩放零重编译、槽内 clip
 窗口跟随、槽上文本 churn tier-2、像素跟随验证）、Extract 增量化 e1-e3（跨重编译段 GO 同一、
