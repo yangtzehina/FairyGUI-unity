@@ -63,7 +63,16 @@ harness 注意事项（都踩过）：
 | `InstancedM82Suite` | 19 | M8-2 mount 融合：陈旧/篡改/敌意计数拒挂、拼接、**像素闸门 diff=0**、mount 走槽、烘焙叶上的内容/颜色 tier、同帧自愈、失效阶梯与回退 |
 | `InstancedM84Suite` | 20 | M8-4 分层：可见性 g1-g16（叶/容器隐显零重编译、隐藏态跨重拼接存活、blob 外内容显示优雅失效）、内层变换 tier、t1-t4 六状态过场像素全等且零重编译 |
 | `InstancedM85Suite` | 14 | M8-5 无渲染器叶：defer 作用域、认领态零渲染器、**像素闸门 diff=0**、tier-2/颜色 tier 免渲染器、命中测试、释放物化、宽限期回退 |
+| `InstancedPerfInvariantSuite` | 12 | **性能不变量(确定性)**：各 tier 零重编译(槽/滚动/颜色/文本 slack/挂载移动/挂载内隐显)、三纹理合 1 段、段 GO 池化、idle Render 零分配、40 个 renderless 叶零渲染器、加叶不加段 |
 | `BinderReentrancyCheck` | 11 | MVVM Binder 重入（在 `Assets/Examples/Mvvm/`，由 `InstancedValidationAll` 一并调用） |
+
+**性能门分两层。** 上表最后一套是**第一层:确定性不变量**——把速度承诺里不含时间的部分
+断言成精确计数(18× 之所以是 18×,根因是重编译 120→0,不是某个 µs 数)。计数是确定的,
+所以它和行为套件跑在一起,永远不会 flake。
+
+**第二层是墙钟比值门**,在独立入口 `FairyGUIEditor.InstancedPerfCI` 里(见下),
+必须新鲜会话跑。绝对 µs 只记录、不设门——换机器/换 runner 就得重标定的阈值,
+最后不是被放宽到没意义,就是天天红。
 
 M8 线的另两站不在这里，因为它们在 **editor 程序集**、本目录（Assembly-CSharp）够不着：
 

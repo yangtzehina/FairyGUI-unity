@@ -6,8 +6,10 @@ using System.Text;
 /// Runs every instanced-renderer validation suite in regression order —
 /// M1 reassembler 17, M3 clip stack 10, M7 SDF 17, M4 scenarios 19,
 /// batch1 14, batch2 8, batch3 19, batch3d 10, batch4 12, batch5 curve
-/// text 10, the M8 bake line (M8-1 15, M8-2 19, M8-4 20, M8-5 14), plus the
-/// MVVM reentrancy 11 — and aggregates the verdict.
+/// text 10, the M8 bake line (M8-1 15, M8-2 19, M8-4 20, M8-5 14), the
+/// deterministic perf invariants 12, plus the MVVM reentrancy 11 — and
+/// aggregates the verdict. Wall-clock RATIO gates are a separate fresh-session
+/// entry (FairyGUIEditor.InstancedPerfCI); see Validation/README.md.
 /// M8-3 (codegen) and M8-6 (the standing parity catalog) live in the editor
 /// assembly: see Validation/README.md. Invoke
 /// InstancedValidationAll.Run() from a Play mode eval; the first line is
@@ -61,6 +63,7 @@ public static class InstancedValidationAll
         RunSuite("m8_2_mount_fusion", InstancedM82Suite.Run);
         RunSuite("m8_4_tiers", InstancedM84Suite.Run);
         RunSuite("m8_5_renderless", InstancedM85Suite.Run);
+        RunSuite("perf_invariants", InstancedPerfInvariantSuite.Run);
         RunSuite("mvvm_reentrancy", BinderReentrancyCheck.Run);
 
         sb.Insert(0, $"ALL RESULT pass={pass} fail={fail}\n\n");
