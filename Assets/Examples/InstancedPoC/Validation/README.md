@@ -19,10 +19,39 @@ unicli exec eval '{"code":"return InstancedValidationAll.Run();"}'
 改过脚本后 `exec Compile` **不会**导入新文件——先在 edit 模式跑一次
 `AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport)` 再 Compile。
 
+## 无头跑（CI）
+
+```
+Unity -batchmode -projectPath . \
+      -executeMethod FairyGUIEditor.InstancedValidationCI.Run \
+      [-ciOutput Logs/InstancedValidationResults.txt]
+```
+
+入口自己开验证场景、进 Play、跑汇总、写报告，然后**按结果设退出码**（全绿 0，
+有失败 1）。日志与报告首行是可 grep 的判定行：
+
+```
+INSTANCED VALIDATION VERDICT: PASS pass=215 fail=0
+```
+
+harness 注意事项（都踩过）：
+
+- **不要传 `-quit`**：入口必须活过进 Play 触发的域重载，它自己调
+  `EditorApplication.Exit`。
+- **不要传 `-nographics`**：套件要回读渲染像素。
+- **不要把输出放 `Temp/`**：Unity 退出时会清空该目录，报告会在 CI 读到之前消失
+  （默认已改为 `Logs/`）。
+- 同一工程不能同时被 GUI 编辑器打开——无头跑前先关掉编辑器。
+
+交互式跑用菜单 `Tools/FairyGUI/Run Validation Suites`（需已在 Play 模式）。
+
 ## 套件清单
 
 | 套件 | 项数 | 覆盖 |
 |---|---|---|
+| `InstancedReassemblerSuite` | 17 | M1 quad 重组器合成数据：规范/替代索引模式、scale9 16 顶点→9 quad、UV 按包围盒角映射、90° 旋转、45° 拒绝、退化对、扇形伪阳性、色缺省、offset/flags/stride。**无场景无像素,验证栈的底座** |
+| `InstancedClipStackSuite` | 10 | M3 裁剪栈：窗口变换含 y 取反、嵌套折叠(交集)、软裁剪非对称映射 (1,2,3,4)→(1,4,3,2)、去重、逐叶 clipIndex 盖章、遮罩子树跳过、裁剪区增多而 draw 数持平 |
+| `InstancedM7SdfSuite` | 17 | M7 SDF：圆角/描边/正圆认领、饼图/渐变/真椭圆/旋转/非均匀缩放/超 255px 半径退回原生、quad 计数、半径与描边宽打包、像素探针(内部精确/角落裁掉/描边带)、原生回退可见并按 run 交织 |
 | `M4ScenarioSuite` | 19 | 推送脏协议：隐藏/显示、滤镜开关、`graphics.enabled`、重父级即时自恢复、跨根移动单一 owner、多边形回退与再入、文本增长、dispose 恢复 |
 | `InstancedBatch1Suite` | 14 | blend 回退与 run 屏障、grayed 子树继承与精确 luma、MergedBatch/重复流互斥 |
 | `InstancedBatch2Suite` | 8 | 文本 slack 生命周期（缩/涨/越界/等长 churn、幽灵尾）、认领叶 sortingOrder 省写与释放回同步 |

@@ -4,9 +4,10 @@ using System.Text;
 
 /// <summary>
 /// Runs every instanced-renderer validation suite in regression order —
-/// M4 scenarios 19, batch1 14, batch2 8, batch3 19, batch3d 10, batch4 12,
-/// batch5 curve text 10, the M8 bake line (M8-1 15, M8-2 19, M8-4 20,
-/// M8-5 14), plus the MVVM reentrancy 11 — and aggregates the verdict.
+/// M1 reassembler 17, M3 clip stack 10, M7 SDF 17, M4 scenarios 19,
+/// batch1 14, batch2 8, batch3 19, batch3d 10, batch4 12, batch5 curve
+/// text 10, the M8 bake line (M8-1 15, M8-2 19, M8-4 20, M8-5 14), plus the
+/// MVVM reentrancy 11 — and aggregates the verdict.
 /// M8-3 (codegen) and M8-6 (the standing parity catalog) live in the editor
 /// assembly: see Validation/README.md. Invoke
 /// InstancedValidationAll.Run() from a Play mode eval; the first line is
@@ -44,6 +45,11 @@ public static class InstancedValidationAll
             sb.Append("== ").Append(name).Append(" ==\n").Append(report).Append('\n');
         }
 
+        //bottom of the stack first: if quad reconstruction or clip folding is
+        //wrong, everything above is green for nothing
+        RunSuite("m1_reassembler", InstancedReassemblerSuite.Run);
+        RunSuite("m3_clipstack", InstancedClipStackSuite.Run);
+        RunSuite("m7_sdf", InstancedM7SdfSuite.Run);
         RunSuite("m4_scenarios", M4ScenarioSuite.Run);
         RunSuite("batch1", InstancedBatch1Suite.Run);
         RunSuite("batch2", InstancedBatch2Suite.Run);

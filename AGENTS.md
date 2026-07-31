@@ -42,9 +42,18 @@ FairyGUI-unity 的现代化 fork（分支 `poc/gpu-instanced-ui`，名字已名�
 2. `Tools/FairyGUI/Run FQS Parity` —— 常设对照门禁（枚举不抽样 + 像素/几何双层 + 篡改阶梯），
    结果写 `Temp/FqsParityResults.txt`，判定行 `FQS PARITY VERDICT: PASS|FAIL`。
 3. `FairyGUI/Instanced UI Streams` —— 流诊断面板（段/quads/槽/认领/重编译计数）。
+4. `Tools/FairyGUI/Run Validation Suites` —— 跑仓库内的 215 项行为/像素套件
+   （需已在 Play 模式；无头形态见下）。
 
-CI 类入口（非菜单）：`FairyGUIEditor.InstancedCIBuild.BuildWebGL`（WebGL 构建，
-M6CHECK 在浏览器控制台输出 `M6CHECK VERDICT` 判定行）。
+CI 类入口（非菜单）：
+
+- `FairyGUIEditor.InstancedCIBuild.BuildWebGL` —— WebGL 构建，M6CHECK 在浏览器
+  控制台输出 `M6CHECK VERDICT` 判定行。
+- `FairyGUIEditor.InstancedValidationCI.Run` —— 无头跑全套验证：自己开场景、进
+  Play、写报告到 `Logs/InstancedValidationResults.txt`、按结果设退出码，判定行
+  `INSTANCED VALIDATION VERDICT: PASS|FAIL pass=N fail=M`。
+  **不要传 `-quit`**（入口要活过域重载并自行 Exit）、**不要传 `-nographics`**
+  （要回读像素）；同工程不能与 GUI 编辑器同时打开。
 
 ## 验证纪律
 
@@ -58,8 +67,12 @@ M6CHECK 在浏览器控制台输出 `M6CHECK VERDICT` 判定行）。
   （实测同一测试 45% 降幅在长会话里读出 18% 误报）。
 - **像素探针坐标**：`(逻辑坐标) × GRoot.contentScaleFactor` → 屏幕像素，y 翻转
   `RH-1-y`。验证前确认演示场景已打开（见踩坑第 3 条）。
-- 验证套件目前在会话 scratchpad 中（m8_*_validate.cs 等），固化进仓库的工作在
-  独立任务中进行；固化形态照 FqsParityRunner（catalog + 菜单 + Temp 结果文件）。
+- **验证套件已全部固化进仓库**：`Assets/Examples/InstancedPoC/Validation/`
+  （15 套 215 项：M1 重组器 17、M3 裁剪栈 10、M7 SDF 17、M4 场景 19、批1-4
+  14/8/19/10/12、批5 曲线文本 10、M8-1/2/4/5 15/19/20/14、MVVM 11）。
+  跑法、harness 约定与坑见该目录 `README.md`；一条
+  `eval "return InstancedValidationAll.Run();"` 跑完全部。
+  **新增验证写进该目录**——早期套件只留在会话里，丢过一次，是靠提交信息重建的。
 
 ## 明确不做（终结重复讨论）
 
@@ -108,6 +121,16 @@ M6CHECK 在浏览器控制台输出 `M6CHECK VERDICT` 判定行）。
     断掉 `&&` 链。脚本里用 `echo "===X==="` 加引号、`grep -c ... ; echo DONE` 分号续行。
 12. **python 批量编辑仓库文件**：断言锚点 + 末尾统一写盘（失败零半态）；锚点必须
     对着**当前**文件内容取（批次迭代后旧锚点常失效，见 batch3/M8 多次返工）。
+13. **`Temp/` 在编辑器退出时被清空**：菜单跑法（FqsParityRunner）无碍，但
+    **batchmode 把结果写进 `Temp/` 会在 CI 读到之前消失**——无头结果一律写
+    `Logs/`（已 gitignore）。实测过：退出码与判定行都对，文件却不存在。
+14. **像素探针不要手算 stage 坐标**：GameView 分辨率 + `UIContentScaler` 会让
+    GRoot 带缩放（实测 0.55），手算必错；一律走 `GObject.LocalToGlobal`。区域扫描
+    要先换算角点再直接索引截图数组——逐点调 `LocalToGlobal` 是原生调用，全区域扫
+    会把主线程卡到形似死机（排查过一次，误以为编辑器崩了）。
+15. **裸 `new ScrollPane(gcomp)` 会让显示树成环**（rootContainer 被挂进自己子孙）→
+    遍历死循环卡死编辑器。必须先复刻 `SetupScroll` 的容器拆分，见
+    `InstancedBatch4Suite.ScrollHost`。
 
 ## 文档地图
 
