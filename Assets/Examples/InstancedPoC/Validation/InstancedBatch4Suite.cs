@@ -78,7 +78,8 @@ public static class InstancedBatch4Suite
             env.Check("a1.instancedRendering toggle creates a driven stream",
                 comp.instancedRendering && s != null
                 && InstancedValidationEnv.LiveStreamCount() == streams0 + 1
-                && s.claimedLeafCount > 0 && s.backendName == "vertex-stream");
+                && s.claimedLeafCount > 0
+                && s.backendName == InstancedValidationEnv.expectedBackend);
 
             //--- a2: auto-driven pixels match native ------------------------
             var px = env.Capture();

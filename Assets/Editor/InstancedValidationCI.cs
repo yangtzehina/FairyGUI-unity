@@ -18,7 +18,13 @@ namespace FairyGUIEditor
     ///
     ///   Unity -batchmode -projectPath . \
     ///         -executeMethod FairyGUIEditor.InstancedValidationCI.Run \
-    ///         [-ciOutput Logs/InstancedValidationResults.txt]
+    ///         [-ciOutput Logs/InstancedValidationResults.txt] \
+    ///         [-ciBackend vertex|buffer|both]
+    ///
+    /// The two backends are separate shader and upload implementations of the
+    /// same semantics, so "both" is the honest setting where the hardware
+    /// supports it. Default stays "vertex": it renders everywhere, including
+    /// the machines where the editor's buffer path draws nothing (design §11).
     ///
     /// Notes for the harness:
     /// - do NOT pass -quit: the entry must survive the play-mode domain reload
@@ -42,6 +48,7 @@ namespace FairyGUIEditor
         const string kActiveKey = "FairyGUI.InstancedValidationCI.active";
         const string kOutputKey = "FairyGUI.InstancedValidationCI.output";
         const string kDeadlineKey = "FairyGUI.InstancedValidationCI.deadline";
+        const string kBackendKey = "FairyGUI.InstancedValidationCI.backend";
 
         const int kSettleFrames = 45;   //let FairyGUI's Stage/camera boot
         const double kTimeoutSeconds = 900;
@@ -57,7 +64,18 @@ namespace FairyGUIEditor
             if (i >= 0 && i + 1 < args.Length)
                 output = args[i + 1];
 
+            string backend = "vertex";
+            int b = Array.IndexOf(args, "-ciBackend");
+            if (b >= 0 && b + 1 < args.Length)
+                backend = args[b + 1].ToLowerInvariant();
+            if (backend != "vertex" && backend != "buffer" && backend != "both")
+            {
+                Fail($"unknown -ciBackend '{backend}' (expected vertex|buffer|both)");
+                return;
+            }
+
             SessionState.SetString(kOutputKey, output);
+            SessionState.SetString(kBackendKey, backend);
             SessionState.SetFloat(kDeadlineKey, (float)(EditorApplication.timeSinceStartup + kTimeoutSeconds));
             SessionState.SetBool(kActiveKey, true);
 
@@ -123,13 +141,26 @@ namespace FairyGUIEditor
                     Fail("InstancedValidationAll not found in Assembly-CSharp");
                     return;
                 }
-                MethodInfo m = t.GetMethod("Run", BindingFlags.Public | BindingFlags.Static);
+                string backend = SessionState.GetString(kBackendKey, "vertex");
+                MethodInfo m;
+                object[] argv;
+                if (backend == "both")
+                {
+                    m = t.GetMethod("RunBothBackends", BindingFlags.Public | BindingFlags.Static);
+                    argv = null;
+                }
+                else
+                {
+                    m = t.GetMethod("RunOn", BindingFlags.Public | BindingFlags.Static);
+                    argv = new object[] { backend == "vertex" };
+                }
                 if (m == null)
                 {
-                    Fail("InstancedValidationAll.Run() not found");
+                    Fail("InstancedValidationAll entry point not found");
                     return;
                 }
-                report = (string)m.Invoke(null, null);
+                Debug.Log("InstancedValidationCI: backend = " + backend);
+                report = (string)m.Invoke(null, argv);
             }
             catch (Exception e)
             {

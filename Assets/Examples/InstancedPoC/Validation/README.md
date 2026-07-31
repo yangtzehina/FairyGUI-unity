@@ -19,12 +19,33 @@ unicli exec eval '{"code":"return InstancedValidationAll.Run();"}'
 改过脚本后 `exec Compile` **不会**导入新文件——先在 edit 模式跑一次
 `AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport)` 再 Compile。
 
+## 双后端
+
+顶点流后端与 buffer 后端（顶点级 StructuredBuffer）是**同一语义的两套 shader +
+上传实现**——只跑一条,覆盖率就是名义上的一半。
+
+```
+InstancedValidationAll.RunOn(true)     // 顶点流(默认)
+InstancedValidationAll.RunOn(false)    // buffer
+InstancedValidationAll.RunBothBackends()
+```
+
+历史:本机编辑器的 buffer 路径曾**静默不出图**(shader 编译通过、caps=31、无报错、
+无像素),套件因此一律钉在顶点流。**2026-07-31 复测不再复现**——新启动编辑器上
+buffer 路径正常,且以对照实验坐实像素来自实例 draw(关段渲染器像素消失、开回来复现,
+而叶子 `forceRenderingOff=true`,原生渲染器不参与)。全套 227 项在 buffer 后端一次
+全绿,双后端合计 **454/454**。
+
+**当初的触发条件未查明**,所以默认仍是顶点流(怪癖若复发,验证照样跑得起来);
+但正式验收请跑 `-ciBackend both`。
+
 ## 无头跑（CI）
 
 ```
 Unity -batchmode -projectPath . \
       -executeMethod FairyGUIEditor.InstancedValidationCI.Run \
-      [-ciOutput Logs/InstancedValidationResults.txt]
+      [-ciOutput Logs/InstancedValidationResults.txt] \
+      [-ciBackend vertex|buffer|both]
 ```
 
 入口自己开验证场景、进 Play、跑汇总、写报告，然后**按结果设退出码**（全绿 0，
@@ -119,8 +140,10 @@ M8 线的另两站不在这里，因为它们在 **editor 程序集**、本目�
 
 `InstancedValidationEnv` 是共享 harness，照抄现有套件的骨架即可：
 
-- **一律走 `forceVertexPath`**（env 构造时自动开、Dispose 时还原）。本机编辑器上
-  buffer 路径（顶点 SSBO）的 draw 静默不出像素，像素探针只有顶点流后端可信。
+- **后端由 env 统一钉住**，别自己写 `forceVertexPath`。默认顶点流;
+  `InstancedValidationEnv.useVertexBackend = false` 切 buffer 路径,
+  断言里比对后端名用 `InstancedValidationEnv.expectedBackend`(别写死字符串)。
+  历史原因见下方「双后端」一节。
 - **`env.Step(n)` 驱帧**，内部是 `Stage.ForceUpdate()`——整套可以在一条 eval 里跑完，
   不需要 MonoBehaviour 跨帧。
 - **像素探针一律走 `env.Probe(px, obj, lx, ly)`**（内部 `LocalToGlobal`）。

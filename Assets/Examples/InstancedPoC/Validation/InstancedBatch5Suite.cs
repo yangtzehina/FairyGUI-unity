@@ -108,8 +108,8 @@ public static class InstancedBatch5Suite
 
             //--- v4: the vertex path CLAIMS curve text (6a42c0f) -----------
             //before the data-texture rewrite this leaf was a fallback barrier
-            env.Check("v4.vertex-stream backend claims the curve leaf (no barrier)",
-                stream.backendName == "vertex-stream" && stream.IsClaimed(gT)
+            env.Check($"v4.{InstancedValidationEnv.expectedBackend} backend claims the curve leaf (no barrier)",
+                stream.backendName == InstancedValidationEnv.expectedBackend && stream.IsClaimed(gT)
                 && stream.runCount == 1 && stream.lastSkippedPairs == 0
                 && gT.meshRenderer.forceRenderingOff);
 

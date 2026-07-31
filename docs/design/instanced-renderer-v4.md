@@ -290,7 +290,7 @@ mergeability（评审 M10/M14 教训：enabled 也是实例化准入条件且变
 | GLES 3.0/3.1 低端 | 同 WebGL 顶点流后端（一套代码） | ProGPU 浏览器路径同款取舍 |
 | Built-in RP | 段 = MeshRenderer 显示子节点（M5），平台中立 | sortingOrder/翻层协议不随后端变 |
 | **WebGL 真实构建验证（2026-07-31，阶梯 2 关账）** | development 构建（VirtualList 场景、压缩关闭）在真实浏览器运行：`device=OpenGLES3 vertexCaps=0 → useVertexPath=True`（自动检测如设计选中顶点流后端）；接管 **1 段 491 quads**、skipped=0；像素对照 static mean=0.001 badPx=0.000%、scrolled mean=0.000 badPx=0.000%；**M6CHECK VERDICT: PASS**（浏览器控制台机读判定行，CI 抓取即用）。构建入口 InstancedCIBuild.BuildWebGL 实跑无改动 | 顶点流后端的目标平台首次真机级验证；曲线文本 WebGL 场景验证待专门构建 |
-| **已知环境怪癖（2026-07-25）** | 本机（M4/Metal/2022.3.62f3）**新启动的编辑器实例**上，buffer 路径（顶点 SSBO）的 draw 静默无输出：shader 编译通过、caps=31、无报错，但不出像素；顶点流后端正常。清 ShaderCache/重导入/聚焦 GameView 均无效；新旧代码一致复现（非回归）。编辑器内视觉验证一律走 `forceVertexPath`；播放器构建未受影响的验证留待真机冒烟（阶梯5） | 双后端设计的意外回报：验证不因此中断 |
+| ~~**已知环境怪癖（2026-07-25）**~~ **已不复现（2026-07-31）** | 曾记录：本机（M4/Metal/2022.3.62f3）新启动的编辑器实例上 buffer 路径（顶点 SSBO）的 draw 静默无输出（shader 编译通过、caps=31、无报错、无像素），因此编辑器内视觉验证一律走 `forceVertexPath`。**2026-07-31 复测不再复现**：新启动编辑器上 buffer 路径正常出图，并以对照实验坐实像素确实来自实例 draw（关掉段渲染器像素消失、开回来复现，且叶子 `forceRenderingOff=true` 原生渲染器不参与）。全套 227 项在 buffer 后端**一次全绿**，双后端合计 454/454（无头 `-ciBackend both`）。**未查明当初的触发条件**，故顶点流仍是套件默认后端，怪癖若复发不影响验证可跑 | 双后端设计的回报兑现了两次：怪癖期验证不中断，怪癖消失后两条路径互为对照 |
 | URP | 同 API 可用；材质换 URP unlit 模板 | 适配点已知 |
 
 顶点流后端的代价（记录）：实例数据 ×4 复制（88B/顶点 vs 80B/实例，1100 quad

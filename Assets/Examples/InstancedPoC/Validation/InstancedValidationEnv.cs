@@ -11,16 +11,36 @@ using UnityEngine;
 /// rebuilt here from the git-log Validation records and
 /// docs/design/batch3-incremental.md so they live in the repo.
 ///
-/// The environment forces the vertex-stream backend (the buffer path draws
-/// nothing on this machine's editor — design doc §11) and drives frames
-/// synchronously with Stage.ForceUpdate, so a whole suite runs inside one eval
-/// call. Pixel probes render StageCamera into a RenderTexture with a solid
-/// clear override (the stage camera itself only clears depth) and sample in
-/// stage coordinates via GObject.LocalToGlobal.
+/// The environment pins the backend (see <see cref="useVertexBackend"/>) and
+/// drives frames synchronously with Stage.ForceUpdate, so a whole suite runs
+/// inside one eval call. Pixel probes render StageCamera into a RenderTexture
+/// with a solid clear override (the stage camera itself only clears depth) and
+/// sample in stage coordinates via GObject.LocalToGlobal.
 /// </summary>
 public class InstancedValidationEnv : IDisposable
 {
     public static readonly Color32 BG = new Color32(20, 20, 20, 255);
+
+    /// <summary>
+    /// Which backend the suites compile against. Default is the vertex-stream
+    /// path: it renders everywhere, and this machine's editor historically drew
+    /// NOTHING on the buffer path (vertex-stage StructuredBuffer — design doc
+    /// §11), which is why every suite was written against it.
+    ///
+    /// That quirk did not reproduce on a freshly launched editor on 2026-07-31
+    /// (verified by a control: disabling the segment renderers removed the
+    /// pixels, so they really came from the instanced draw), so the suites can
+    /// now be run against the buffer path too — set this to false, or use the
+    /// runner entry points that sweep both. Keep the default as-is: when the
+    /// quirk resurfaces, the whole suite must still be runnable.
+    /// </summary>
+    public static bool useVertexBackend = true;
+
+    /// <summary>The backend name the current setting is expected to produce.</summary>
+    public static string expectedBackend
+    {
+        get { return useVertexBackend ? "vertex-stream" : "buffer"; }
+    }
 
     public readonly GComponent root;
     public readonly GGraph bg;
@@ -38,7 +58,7 @@ public class InstancedValidationEnv : IDisposable
     public InstancedValidationEnv(float width = 620, float height = 440)
     {
         _prevForce = InstancedUIStream.forceVertexPath;
-        InstancedUIStream.forceVertexPath = true; //editor buffer path draws no pixels
+        InstancedUIStream.forceVertexPath = useVertexBackend;
         if (string.IsNullOrEmpty(UIConfig.defaultFont))
             UIConfig.defaultFont = "Arial";
         root = new GComponent();

@@ -63,10 +63,14 @@ CI 类入口（非菜单）：
 
 - **每个里程碑三道门**：桌面编译门 0 错 → Unity 编译 0 错 0 警 → 行为/像素套件全绿。
   绿了才提交，提交信息里写验收数字。
-- **编辑器内像素验证一律 `InstancedUIStream.forceVertexPath = true`**：本机编辑器的
-  buffer 路径（顶点级 StructuredBuffer 拉取）静默不出图（fragment 级 SSBO 正常，
-  曲线文本原生 shader 能画）。真实 WebGL 已验证顶点路径逐像素正确，播放器构建
-  预期不受此怪癖影响。
+- **后端覆盖：两条都要跑**。历史上本机编辑器的 buffer 路径（顶点级 StructuredBuffer）
+  静默不出图，所以套件默认 `forceVertexPath = true`。**2026-07-31 复测该怪癖不再复现**
+  （对照实验确认像素来自实例 draw），buffer 后端 227/227 全绿，双后端 454/454。
+  默认仍留顶点流（怪癖若复发验证照跑），但**验收应跑 `-ciBackend both`**：两条后端是
+  同一语义的两套 shader + 上传实现，只跑一条等于覆盖了一半。切换用
+  `InstancedValidationEnv.useVertexBackend` / `InstancedValidationAll.RunOn(bool)` /
+  `RunBothBackends()`；断言里要比对后端名时用 `InstancedValidationEnv.expectedBackend`，
+  别写死字符串。真实 WebGL 已单独验证顶点路径逐像素正确。
 - **性能门必须在新鲜 Play 会话跑**：长会话的 GC/驱动债务会扭曲微基准
   （实测同一测试 45% 降幅在长会话里读出 18% 误报）。**已按此重构为两层**：
   第一层 `InstancedPerfInvariantSuite`（各 tier 零重编译/零渲染器/零分配等**计数**
