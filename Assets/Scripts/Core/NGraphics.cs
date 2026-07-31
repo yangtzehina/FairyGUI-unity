@@ -121,7 +121,8 @@ namespace FairyGUI
             _instancedBy = stream;
             _lastInstancedBy = stream;
             if (meshRenderer != null)
-                meshRenderer.forceRenderingOff = true;
+                if (meshRenderer != null)
+                    meshRenderer.forceRenderingOff = true;
         }
 
         internal void _ClearInstancedOwner()
@@ -130,10 +131,52 @@ namespace FairyGUI
             _RestoreNativeColors();
             if (meshRenderer != null)
             {
-                meshRenderer.forceRenderingOff = false;
+                if (_renderless)
+                    _EnsureNative(); //released: native rendering resumes
+                if (meshRenderer != null)
+                    meshRenderer.forceRenderingOff = false;
                 //resync the native sortingOrder skipped while claimed
-                meshRenderer.sortingOrder = _renderingOrder;
+                if (meshRenderer != null)
+                    meshRenderer.sortingOrder = _renderingOrder;
             }
+        }
+
+        /// <summary>
+        /// M8-5: creates the Mesh object and builds pending content — enough
+        /// for the stream to read; the renderer stays absent while claimed.
+        /// </summary>
+        internal void _EnsureMeshBuilt()
+        {
+            if (mesh == null)
+            {
+                mesh = new Mesh();
+                mesh.name = gameObject.name;
+                mesh.MarkDynamic();
+                mesh.hideFlags = DisplayObject.hideFlags;
+            }
+            if (_meshDirty)
+                UpdateMeshNow();
+        }
+
+        /// <summary>
+        /// M8-5: materializes the renderer for native rendering (release path,
+        /// or a deferred leaf that ended up unclaimed).
+        /// </summary>
+        internal void _EnsureNative()
+        {
+            if (!_renderless)
+                return;
+            _renderless = false;
+            _EnsureMeshBuilt();
+            meshFilter = gameObject.AddComponent<MeshFilter>();
+            meshRenderer = gameObject.AddComponent<MeshRenderer>();
+            meshRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            meshRenderer.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.Off;
+            meshRenderer.receiveShadows = false;
+            meshFilter.mesh = mesh;
+            meshFilter.hideFlags = DisplayObject.hideFlags;
+            meshRenderer.hideFlags = DisplayObject.hideFlags;
+            meshRenderer.sortingOrder = _renderingOrder;
         }
 
         /// <summary>
@@ -198,6 +241,18 @@ namespace FairyGUI
         /// 
         /// </summary>
         /// <param name="gameObject"></param>
+        /// <summary>
+        /// M8-5: while true, new NGraphics are created RENDERLESS — no
+        /// MeshFilter/MeshRenderer/Mesh objects. Set around instantiating
+        /// content destined for an FQS mount: claimed leaves never render
+        /// natively, so the objects are pure waste at open time. Mesh builds
+        /// on demand (stream reads), the renderer materializes on release or
+        /// when the leaf ends up unclaimed.
+        /// </summary>
+        public static bool deferRenderers;
+        internal bool _renderless;
+        int _renderlessUpdates;
+
         public NGraphics(GameObject gameObject)
         {
             this.gameObject = gameObject;
@@ -206,6 +261,14 @@ namespace FairyGUI
             _shader = ShaderConfig.imageShader;
             _color = Color.white;
             _meshFactory = this;
+
+            if (deferRenderers)
+            {
+                _renderless = true;
+                _meshDirty = true;
+                Stats.LatestGraphicsCreation++;
+                return;
+            }
 
             meshFilter = gameObject.AddComponent<MeshFilter>();
             meshRenderer = gameObject.AddComponent<MeshRenderer>();
@@ -366,14 +429,16 @@ namespace FairyGUI
                     if (_material.HasProperty(ShaderConfig.ID_Stencil) || _material.HasProperty(ShaderConfig.ID_ClipBox))
                         _customMatarial |= 2;
 
-                    meshRenderer.sharedMaterial = _material;
+                    if (meshRenderer != null)
+                        meshRenderer.sharedMaterial = _material;
                     if (_texture != null)
                         _material.mainTexture = _texture.nativeTexture;
                 }
                 else
                 {
                     _customMatarial = 0;
-                    meshRenderer.sharedMaterial = null;
+                    if (meshRenderer != null)
+                        meshRenderer.sharedMaterial = null;
                 }
             }
         }
@@ -463,10 +528,10 @@ namespace FairyGUI
         /// </summary>
         public bool enabled
         {
-            get { return meshRenderer.enabled; }
+            get { return meshRenderer == null || meshRenderer.enabled; }
             set
             {
-                if (meshRenderer.enabled != value)
+                if (meshRenderer != null && meshRenderer.enabled != value)
                 {
                     meshRenderer.enabled = value;
                     //enabled is an instancing admission condition (review M10/M14):
@@ -504,7 +569,7 @@ namespace FairyGUI
                     //claimed leaves keep the managed field fresh (ComputeRunOrders
                     //reads it) but skip the native write — the renderer is off;
                     //_ClearInstancedOwner resyncs on release (audit batch 2)
-                    if (_instancedBy == null)
+                    if (_instancedBy == null && meshRenderer != null)
                         meshRenderer.sortingOrder = value;
                 }
             }
@@ -594,6 +659,9 @@ namespace FairyGUI
                 _instancedBy._QueueLeafColor(this);
                 return;
             }
+
+            if (mesh == null)
+                return; //renderless, not yet built: the build bakes _alpha
 
             int vertCount = mesh.vertexCount;
             if (vertCount == 0)
@@ -748,6 +816,28 @@ namespace FairyGUI
         public void Update(UpdateContext context, float alpha, bool grayed)
         {
             Stats.GraphicsCount++;
+
+            //M8-5: renderless leaves do no native work. Claimed: the push
+            //channels still fire (content queues a tier-2 rebuild, alpha the
+            //color tier). Unclaimed: a short grace covers the create->claim
+            //window, then the leaf materializes and renders natively.
+            if (_renderless)
+            {
+                if (_instancedBy != null)
+                {
+                    if (_meshDirty)
+                    {
+                        _alpha = alpha;
+                        _instancedBy._QueueLeafUpdate(this);
+                    }
+                    else if (_alpha != alpha)
+                        ChangeAlpha(alpha);
+                    return;
+                }
+                if (InstancedUIStream.liveInPlaceCount > 0 && ++_renderlessUpdates <= 2)
+                    return;
+                _EnsureNative();
+            }
 
             if (_meshDirty)
             {

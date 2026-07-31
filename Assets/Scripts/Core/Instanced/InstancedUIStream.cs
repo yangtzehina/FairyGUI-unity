@@ -1414,6 +1414,9 @@ namespace FairyGUI
 
         void ExtractLeaf(NGraphics graphics, Matrix4x4 worldToLocal, uint clipIndex, bool grayed, uint slotIndex)
         {
+            //M8-5: deferred (renderless) leaves build their mesh on first read
+            if (graphics._renderless)
+                graphics._EnsureMeshBuilt();
             Mesh mesh = graphics.mesh;
             if (mesh == null || mesh.vertexCount == 0)
                 return;
@@ -2097,6 +2100,8 @@ namespace FairyGUI
                 if (range.hidden)
                     return true; //stays zeroed; the show path requeues a rebuild
 
+                if (graphics._renderless)
+                    graphics._EnsureMeshBuilt(); //deferred leaf: build on demand
                 Mesh mesh = graphics.mesh;
                 if (mesh == null)
                     return false;
