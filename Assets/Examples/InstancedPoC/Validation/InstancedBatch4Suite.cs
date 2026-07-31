@@ -122,11 +122,19 @@ public static class InstancedBatch4Suite
             env.Check("a6.first scroll promotes the content container",
                 s2.slotCount >= 1);
             sp.posY = 80;
-            env.Step(1);
+            //ScrollPane.Refresh defers to the next update's Begin — give the
+            //move a settle frame before probing (the semantic under test is
+            //zero-extract, not same-frame latency)
+            env.Step(2);
             px = env.Capture();
-            env.Check("a7.later scrolls are matrix writes and pixels track",
+            //probe 20px inside the yellow band (content y=150): at posY=80 the
+            //band's top edge sits exactly at viewport y=50, and an edge probe
+            //flakes on half-pixel scroll rounding into the 10px band gap
+            var a7c = env.Probe(px, comp2, 60, 70);
+            env.Check($"a7.later scrolls are matrix writes and pixels track"
+                + $" (extracts {e2}->{s2.extractCount} cyanBefore={cyanBefore} after=({a7c.r},{a7c.g},{a7c.b}))",
                 s2.extractCount == e2 && cyanBefore
-                && InstancedValidationEnv.NearRGB(env.Probe(px, comp2, 60, 50), 255, 235, 4, 24));
+                && InstancedValidationEnv.NearRGB(a7c, 255, 235, 4, 24));
 
             //--- a8: the mask stays the stream's external window ------------
             //below the mask the env root's backdrop shows through — content
