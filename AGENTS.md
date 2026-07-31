@@ -42,8 +42,9 @@ FairyGUI-unity 的现代化 fork（分支 `poc/gpu-instanced-ui`，名字已名�
 2. `Tools/FairyGUI/Run FQS Parity` —— 常设对照门禁（枚举不抽样 + 像素/几何双层 + 篡改阶梯），
    结果写 `Temp/FqsParityResults.txt`，判定行 `FQS PARITY VERDICT: PASS|FAIL`。
 3. `FairyGUI/Instanced UI Streams` —— 流诊断面板（段/quads/槽/认领/重编译计数）。
-4. `Tools/FairyGUI/Run Validation Suites` —— 跑仓库内的 215 项行为/像素套件
+4. `Tools/FairyGUI/Run Validation Suites` —— 跑仓库内的 227 项行为/像素/不变量套件
    （需已在 Play 模式；无头形态见下）。
+5. `Tools/FairyGUI/Run Perf Gates` —— 墙钟比值门（需新鲜 Play 会话）。
 
 CI 类入口（非菜单）：
 
@@ -54,6 +55,9 @@ CI 类入口（非菜单）：
   `INSTANCED VALIDATION VERDICT: PASS|FAIL pass=N fail=M`。
   **不要传 `-quit`**（入口要活过域重载并自行 Exit）、**不要传 `-nographics`**
   （要回读像素）；同工程不能与 GUI 编辑器同时打开。
+- `FairyGUIEditor.InstancedPerfCI.Run` —— 无头跑比值性能门，报告
+  `Logs/InstancedPerfResults.txt`，判定行 `INSTANCED PERF VERDICT: PASS|FAIL`。
+  同上三条禁忌，且**必须与行为套件分进程**（见验证纪律）。
 
 ## 验证纪律
 
@@ -64,7 +68,13 @@ CI 类入口（非菜单）：
   曲线文本原生 shader 能画）。真实 WebGL 已验证顶点路径逐像素正确，播放器构建
   预期不受此怪癖影响。
 - **性能门必须在新鲜 Play 会话跑**：长会话的 GC/驱动债务会扭曲微基准
-  （实测同一测试 45% 降幅在长会话里读出 18% 误报）。
+  （实测同一测试 45% 降幅在长会话里读出 18% 误报）。**已按此重构为两层**：
+  第一层 `InstancedPerfInvariantSuite`（各 tier 零重编译/零渲染器/零分配等**计数**
+  断言，确定性，随行为套件跑）；第二层 `InstancedPerfRatioBench` 只测 **A/B 比值**
+  且 **ABAB 交替**（那次事故的比值门错在 A、B 先后测，只有 B 背了债），共同成本移出
+  计时区，阈值取实测的约 1/3，绝对 µs 只记录不设门。入口
+  `FairyGUIEditor.InstancedPerfCI`，**必须单独一个 Unity 进程**（batchmode 冷启动
+  = 天然新鲜会话），不能接在行为套件之后。
 - **像素探针坐标**：`(逻辑坐标) × GRoot.contentScaleFactor` → 屏幕像素，y 翻转
   `RH-1-y`。验证前确认演示场景已打开（见踩坑第 3 条）。
 - **验证套件已全部固化进仓库**：`Assets/Examples/InstancedPoC/Validation/`
@@ -131,7 +141,11 @@ CI 类入口（非菜单）：
 15. **裸 `new ScrollPane(gcomp)` 会让显示树成环**（rootContainer 被挂进自己子孙）→
     遍历死循环卡死编辑器。必须先复刻 `SetupScroll` 的容器拆分，见
     `InstancedBatch4Suite.ScrollHost`。
-16. **像素探针不要压几何边缘**：滚动/矩阵写有半像素取整，探针落在色带边界
+16. **`deferRenderers` 内容必须有流可认领**：宽限期条件是
+    `liveInPlaceCount > 0 && ++_renderlessUpdates <= 2`——没有活跃 in-place 流时
+    `_EnsureNative()` 首帧就把渲染器全建出来，省不到任何东西（写基准时踩过：
+    开窗节省从 22% 掉到 9%，一度以为是分层退化）。
+17. **像素探针不要压几何边缘**：滚动/矩阵写有半像素取整，探针落在色带边界
     （或色带间隙旁）会随会话状态翻转。探针至少离边缘 10px，且 Check 消息里
     带上实测 RGB（a7 教训：三腿合一的裸 bool 无法定位失败腿）。
 
