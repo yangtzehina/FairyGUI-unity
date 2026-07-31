@@ -5,8 +5,10 @@ using System.Text;
 /// <summary>
 /// Runs every instanced-renderer validation suite in regression order —
 /// M4 scenarios 19, batch1 14, batch2 8, batch3 19, batch3d 10, batch4 12,
-/// batch5 curve text 10, plus the MVVM reentrancy 11 — and aggregates the
-/// verdict. Invoke
+/// batch5 curve text 10, the M8 bake line (M8-1 15, M8-2 19, M8-4 20,
+/// M8-5 14), plus the MVVM reentrancy 11 — and aggregates the verdict.
+/// M8-3 (codegen) and M8-6 (the standing parity catalog) live in the editor
+/// assembly: see Validation/README.md. Invoke
 /// InstancedValidationAll.Run() from a Play mode eval; the first line is
 /// "ALL RESULT pass=N fail=N".
 /// </summary>
@@ -49,6 +51,10 @@ public static class InstancedValidationAll
         RunSuite("batch3d", InstancedBatch3dSuite.Run);
         RunSuite("batch4", InstancedBatch4Suite.Run);
         RunSuite("batch5_curvetext", InstancedBatch5Suite.Run);
+        RunSuite("m8_1_blob_baker", InstancedM81Suite.Run);
+        RunSuite("m8_2_mount_fusion", InstancedM82Suite.Run);
+        RunSuite("m8_4_tiers", InstancedM84Suite.Run);
+        RunSuite("m8_5_renderless", InstancedM85Suite.Run);
         RunSuite("mvvm_reentrancy", BinderReentrancyCheck.Run);
 
         sb.Insert(0, $"ALL RESULT pass={pass} fail={fail}\n\n");

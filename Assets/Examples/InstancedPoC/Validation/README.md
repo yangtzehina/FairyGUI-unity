@@ -30,7 +30,23 @@ unicli exec eval '{"code":"return InstancedValidationAll.Run();"}'
 | `InstancedBatch3dSuite` | 10 | 跨图集段键：合段、6 纹理 4+2 裂段、逐槽像素精确、churn 保槽位、grayed 共存 |
 | `InstancedBatch4Suite` | 12 | 产品化：`instancedRendering` 开关、Stage 自动驱动与原生像素等价、内层移动/滚动走槽、开关往返、dispose 拆除 |
 | `InstancedBatch5Suite` | 10 | 曲线文本：CurveBaseFont 注册与 shader 接线、side table、UBB 分段色、下划线实心 quad、字形 slack、顶点路径认领与实例字形像素 |
+| `InstancedM81Suite` | 15 | M8-1 烘焙线：FQS1 blob 往返与逐位 quad 等价、字节级可重现、敌意输入拒绝、拒烘矩阵（text/MovieClip 存在性、root 遮罩、回退屏障、被遮罩子树、非包纹理）、SDF 标记 |
+| `InstancedM82Suite` | 19 | M8-2 mount 融合：陈旧/篡改/敌意计数拒挂、拼接、**像素闸门 diff=0**、mount 走槽、烘焙叶上的内容/颜色 tier、同帧自愈、失效阶梯与回退 |
+| `InstancedM84Suite` | 20 | M8-4 分层：可见性 g1-g16（叶/容器隐显零重编译、隐藏态跨重拼接存活、blob 外内容显示优雅失效）、内层变换 tier、t1-t4 六状态过场像素全等且零重编译 |
+| `InstancedM85Suite` | 14 | M8-5 无渲染器叶：defer 作用域、认领态零渲染器、**像素闸门 diff=0**、tier-2/颜色 tier 免渲染器、命中测试、释放物化、宽限期回退 |
 | `BinderReentrancyCheck` | 11 | MVVM Binder 重入（在 `Assets/Examples/Mvvm/`，由 `InstancedValidationAll` 一并调用） |
+
+M8 线的另两站不在这里，因为它们在 **editor 程序集**、本目录（Assembly-CSharp）够不着：
+
+- **M8-3 代码生成**：`Assets/Editor/FqsViewGenerator.cs`，验收要跨域重载两阶段
+  （生成 → 重载 → 类型加载/枚举翻页），由菜单 `Tools/FairyGUI/Bake Packages`
+  与 `[DidReloadScripts]` 校验器自带；负向编译探针（删页应 CS0117）本就无法在
+  单次 eval 内表达。
+- **M8-6 常驻对拍闸门**：`Assets/Editor/FqsParityRunner.cs`（菜单
+  `Tools/FairyGUI/Run FQS Parity` 或 CI 调 `Run()`，结果写
+  `Temp/FqsParityResults.txt`）。它枚举已加载包的**每个**导出组件做
+  runtime vs mounted 对拍，与本目录的程序化夹具互补：那边覆盖真实包资产，
+  这边覆盖机制边界。
 
 ## 写新套件时的约定
 
