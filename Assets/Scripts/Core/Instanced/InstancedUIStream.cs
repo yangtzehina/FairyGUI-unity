@@ -421,6 +421,17 @@ namespace FairyGUI
 
         /// <summary>Hot containers that could not get a slot in the last Extract (>15).</summary>
         public int slotOverflow { get; private set; }
+
+        /// <summary>Diagnostics/CI probe: compiled leaf ranges.</summary>
+        public int leafCount { get { return _leaves.Count; } }
+
+        /// <summary>Diagnostics/CI probe (M8-6 parity): copies the compiled quad
+        /// stream out for comparison harnesses.</summary>
+        public void CopyQuadsForDiagnostics(List<QuadInstance> into)
+        {
+            into.Clear();
+            into.AddRange(_quads);
+        }
         public int quadCount { get { return _quads.Count; } }
 
         /// <summary>
