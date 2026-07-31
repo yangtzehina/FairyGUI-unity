@@ -87,6 +87,33 @@ public partial class 确认按钮View   //per exported component, opt-in 输出�
 预算校准：OpenFairy 全管线 ≈3k 行（含 uGUI 侧运行时）；我们复用 parser 与流协议，
 烘焙器+装载器预计更小，M8-5 是最大单站。
 
+## 4.5 使用指引（2026-07-31，真实包 dogfood 实测后定）
+
+**接入方式**（全部真实验证过的流程）：
+
+```csharp
+// 编辑期：Tools/FairyGUI/Bake Packages (FQS) 一键出 blob + 视图
+// 运行时：
+((Container)win.displayObject).instancedRendering = true;   // 窗口级一次
+
+NGraphics.deferRenderers = true;                            // 仅装饰重组件加这两行
+var c = UIPackage.CreateObject("Basics", "MyPanel") as GComponent;
+NGraphics.deferRenderers = false;
+FqsMount.Mount(c, blobBytes, srcHash);                      // 源哈希门禁
+```
+
+**何时用什么**（Basics dogfood 实测校准）：
+
+| 组件形态 | 建议 | 依据 |
+|---|---|---|
+| **≥10 叶装饰重**（背景框/边饰/成排静态图的面板、窗口） | mount + defer 全上 | 80 叶实测打开 **-50%**；收益与叶数成正比 |
+| **<10 叶小件**（单图组件、滚动条、小控件） | 只 mount，**不要 defer** | PopupMenu（1 叶）0%、Component12（4 叶）**-11%**——挂载绑定开销吃掉了三件套节省 |
+| 任意可烘组件 | mount 本身总是值得 | Extract 免走树（7×）+ 段合并 + 全套 tier（移动/翻页/隐显零重编译） |
+| 带文本/动画组件 | 不烘，同流运行时路径 | 混合同流零成本共存（dogfood：5 挂载组件 + 整页文本组件 = 1 段 550 quads） |
+
+**主战场判断**：烘焙线的收益画像 = 装饰重的面板/窗口——真实项目 UI 量最大的部分；
+全是小交互件的包（如 Basics 演示包，24/29 因文本/动画被拒）不是它的用武之地，也无须强求。
+
 ## 5. 风险与对策
 
 - **双实现漂移**（§15 已直说）：烘焙器复刻 FairyGUI 布局语义（relations/pivot/旋转/group）——
