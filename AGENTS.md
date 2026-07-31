@@ -131,6 +131,9 @@ CI 类入口（非菜单）：
 15. **裸 `new ScrollPane(gcomp)` 会让显示树成环**（rootContainer 被挂进自己子孙）→
     遍历死循环卡死编辑器。必须先复刻 `SetupScroll` 的容器拆分，见
     `InstancedBatch4Suite.ScrollHost`。
+16. **像素探针不要压几何边缘**：滚动/矩阵写有半像素取整，探针落在色带边界
+    （或色带间隙旁）会随会话状态翻转。探针至少离边缘 10px，且 Check 消息里
+    带上实测 RGB（a7 教训：三腿合一的裸 bool 无法定位失败腿）。
 
 ## 文档地图
 
