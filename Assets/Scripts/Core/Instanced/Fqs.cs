@@ -423,6 +423,19 @@ namespace FairyGUI
         /// as name-keyed External refs — session-dependent identity, only safe
         /// for programmatic/testing content whose mount supplies textures.
         /// </summary>
+        /// <summary>
+        /// M8-7: bake the SUPERSET — before extracting, every hidden object in
+        /// the subtree is temporarily made visible (and restored afterwards), so
+        /// controller pages, button states and designer-hidden content all get
+        /// real quads in the blob. At splice the stateless visibility replay
+        /// zeroes whatever the LIVE flags say is hidden, and a later show is a
+        /// range rewrite instead of "absent from blob -> invalidate the mount".
+        /// Without this, the first press of a mounted button (its down state is
+        /// a controller page) silently degraded the whole mount to the runtime
+        /// walk. Off = bake exactly what is visible, the pre-M8-7 behavior.
+        /// </summary>
+        public static bool supersetVisibility = true;
+
         public static byte[] Bake(Container root, ulong fuiHash, out string refuseReason, bool allowExternalTextures)
         {
             //the ROOT can be masked/painting itself (overflow!=visible sets the
@@ -445,16 +458,47 @@ namespace FairyGUI
             var savedMounts = new List<KeyValuePair<Container, FqsMount>>();
             var savedPending = new List<KeyValuePair<Container, FqsAutoMount.Pending>>();
             DetachMounts(root, savedMounts, savedPending);
+            //superset: unhide everything for the extract, restore EXACTLY the
+            //objects we touched. The property setter (not the raw flag) both
+            //ways: SetActive must fire so the next update builds the meshes,
+            //and the restore must retrace the same side effects. renderingOrder
+            //is per-frame transient state, so the toggles leave nothing behind
+            //— rebaking the same instance is byte-identical (asserted by the
+            //station suite).
+            var unhidden = new List<DisplayObject>();
+            if (supersetVisibility)
+            {
+                CollectHidden(root, unhidden);
+                for (int i = 0; i < unhidden.Count; i++)
+                    unhidden[i].visible = true;
+                if (unhidden.Count > 0 && Stage.inst != null)
+                    Stage.inst.ForceUpdate(); //build the newly-visible meshes
+            }
             try
             {
                 return BakeCore(root, fuiHash, out refuseReason, allowExternalTextures);
             }
             finally
             {
+                for (int i = 0; i < unhidden.Count; i++)
+                    unhidden[i].visible = false;
                 for (int i = 0; i < savedMounts.Count; i++)
                     savedMounts[i].Key._fqsMount = savedMounts[i].Value;
                 for (int i = 0; i < savedPending.Count; i++)
                     savedPending[i].Key._fqsPending = savedPending[i].Value;
+            }
+        }
+
+        static void CollectHidden(Container c, List<DisplayObject> outList)
+        {
+            int cnt = c.numChildren;
+            for (int i = 0; i < cnt; i++)
+            {
+                DisplayObject child = c.GetChildAt(i);
+                if (!child.visible)
+                    outList.Add(child);
+                if (child is Container cc)
+                    CollectHidden(cc, outList);
             }
         }
 

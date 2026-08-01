@@ -143,9 +143,17 @@ namespace FairyGUIEditor
             int pixelDiff = RegionDiff(runtimeShot, mountedShot);
             Object.DestroyImmediate(runtimeShot);
             Object.DestroyImmediate(mountedShot);
+            //M8-7 superset: the mounted pass carries ZEROED ranges for content
+            //hidden in the current state (extra leaves, degenerate quads). The
+            //geometry gate compares what actually RENDERS — zero-area quads are
+            //filtered from BOTH sides (symmetric: the runtime walk zeroes
+            //hidden built content the same way) — and the mounted pass may
+            //track more leaves than a fresh runtime instance, never fewer.
+            FilterDegenerate(runtimeQuads);
+            FilterDegenerate(mountedQuads);
             string geo = CompareQuads(runtimeQuads, mountedQuads);
 
-            if (mounted && pixelDiff == 0 && geo == null && runtimeLeaves == mountedLeaves)
+            if (mounted && pixelDiff == 0 && geo == null && runtimeLeaves <= mountedLeaves)
             {
                 sb.Append($"PASS {name}: quads={mountedQuads.Count} leaves={mountedLeaves}\n");
                 pass++;
@@ -155,6 +163,11 @@ namespace FairyGUIEditor
                 sb.Append($"FAIL {name}: mounted={mounted} pixelDiff={pixelDiff} geo={geo ?? "ok"} leaves {runtimeLeaves}vs{mountedLeaves}\n");
                 fail++;
             }
+        }
+
+        static void FilterDegenerate(List<QuadInstance> quads)
+        {
+            quads.RemoveAll(q => q.rect.z <= 0 || q.rect.w <= 0);
         }
 
         static void RunStaleness(StringBuilder sb, GComponent holder, Container target, ref int pass, ref int fail)

@@ -74,7 +74,16 @@ public static class InstancedM84Suite
             env.Step(2);
 
             string reason;
-            f.blob = FqsBaker.Bake(InstancedValidationEnv.C(f.comp), 0x8400UL, out reason, false);
+            //superset OFF for this fixture: hiddenAtBake must genuinely be
+            //ABSENT from the blob — g16 tests the graceful-invalidation ladder,
+            //and with M8-7's default the baker would dutifully include it
+            bool savedSuperset = FqsBaker.supersetVisibility;
+            FqsBaker.supersetVisibility = false;
+            try
+            {
+                f.blob = FqsBaker.Bake(InstancedValidationEnv.C(f.comp), 0x8400UL, out reason, false);
+            }
+            finally { FqsBaker.supersetVisibility = savedSuperset; }
             if (f.blob == null)
             {
                 env.Check("g0.fixture bakes (suite prerequisite)", false);
