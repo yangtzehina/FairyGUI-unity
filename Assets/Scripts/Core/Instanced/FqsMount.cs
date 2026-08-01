@@ -60,7 +60,7 @@ namespace FairyGUI
             }
             catch (InvalidDataException e)
             {
-                Debug.LogWarning("FQS mount refused: " + e.Message);
+                Warn("FQS mount refused: " + e.Message);
                 return false;
             }
 
@@ -68,9 +68,19 @@ namespace FairyGUI
             {
                 if ((d.flags & FqsBlob.BlobFlags.NoSourceHash) != 0 || d.fuiHash != expectedFuiHash)
                 {
-                    Debug.LogWarning("FQS mount refused: source hash mismatch (stale blob) — subtree stays on the runtime walk.");
+                    Warn("FQS mount refused: source hash mismatch (stale blob) — subtree stays on the runtime walk.");
                     return false;
                 }
+            }
+
+            //the content scale level picks which image items a component builds
+            //from, so a blob baked at another level carries the wrong atlas
+            //rects — and the package source hash is identical across levels
+            int bakedLevel = FqsBlob.DecodeScaleLevel(d.flags);
+            if (bakedLevel != GRoot.contentScaleLevel)
+            {
+                Warn($"FQS mount refused: blob baked at contentScaleLevel {bakedLevel}, running at {GRoot.contentScaleLevel}.");
+                return false;
             }
 
             var m = new FqsMount { data = d, root = root };
@@ -83,6 +93,21 @@ namespace FairyGUI
         public static void Unmount(Container root)
         {
             root._fqsMount = null;
+            root._fqsPending = null;
+        }
+
+        /// <summary>
+        /// Auto-mount realizes one blob per INSTANCE, so a refusal that is a
+        /// property of the item (a stale blob, a wrong scale level) would log
+        /// once per instance. It sets this for repeat offenders; the first
+        /// refusal is always reported.
+        /// </summary>
+        internal static bool quietRefusals;
+
+        static void Warn(string msg)
+        {
+            if (!quietRefusals)
+                Debug.LogWarning(msg);
         }
 
         bool Bind(Func<string, Texture> resolveExternal)
@@ -103,14 +128,14 @@ namespace FairyGUI
                         PackageItem item = pkg?.GetItem(tr.url.Substring(slash + 1));
                         if (item == null)
                         {
-                            Debug.LogWarning($"FQS mount refused: package texture '{tr.url}' not loaded.");
+                            Warn($"FQS mount refused: package texture '{tr.url}' not loaded.");
                             return false;
                         }
                         if (item.texture == null)
                             pkg.GetItemAsset(item);
                         if (item.texture == null || item.texture.nativeTexture == null)
                         {
-                            Debug.LogWarning($"FQS mount refused: package texture '{tr.url}' has no native texture.");
+                            Warn($"FQS mount refused: package texture '{tr.url}' has no native texture.");
                             return false;
                         }
                         textures[i] = item.texture.nativeTexture;
@@ -121,7 +146,7 @@ namespace FairyGUI
                         Texture t = resolveExternal?.Invoke(tr.url);
                         if (t == null)
                         {
-                            Debug.LogWarning($"FQS mount refused: external texture '{tr.url}' unresolved.");
+                            Warn($"FQS mount refused: external texture '{tr.url}' unresolved.");
                             return false;
                         }
                         textures[i] = t;
@@ -142,7 +167,7 @@ namespace FairyGUI
             {
                 if (byGraphicsPath.ContainsKey(kv.Value))
                 {
-                    Debug.LogWarning("FQS mount refused: path hash collision in live subtree.");
+                    Warn("FQS mount refused: path hash collision in live subtree.");
                     return false;
                 }
                 byGraphicsPath[kv.Value] = kv.Key;
@@ -156,7 +181,7 @@ namespace FairyGUI
             {
                 if (!byGraphicsPath.TryGetValue(data.leaves[i].pathHash, out leafGraphics[i]))
                 {
-                    Debug.LogWarning("FQS mount refused: baked leaf not found in live subtree (structure differs).");
+                    Warn("FQS mount refused: baked leaf not found in live subtree (structure differs).");
                     return false;
                 }
             }
@@ -165,7 +190,7 @@ namespace FairyGUI
             {
                 if (!byContainerPath.TryGetValue(data.clips[i].ownerPathHash, out clipOwners[i]))
                 {
-                    Debug.LogWarning("FQS mount refused: baked clip owner not found in live subtree.");
+                    Warn("FQS mount refused: baked clip owner not found in live subtree.");
                     return false;
                 }
             }

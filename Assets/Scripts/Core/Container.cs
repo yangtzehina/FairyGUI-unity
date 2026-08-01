@@ -55,6 +55,9 @@ namespace FairyGUI
         //the instanced stream rooted at this container (in-place mode), if any
         internal InstancedUIStream _instancedStream;
         internal FqsMount _fqsMount; //M8-2: baked quad-stream mount for this subtree
+        //auto-mount: blob armed at construction, bound by the enclosing stream
+        //at extract (binding earlier would outlive structure edits unseen)
+        internal FqsAutoMount.Pending _fqsPending;
 
         /// <summary>
         /// v4 instanced rendering (design docs/design/instanced-renderer-v4.md):

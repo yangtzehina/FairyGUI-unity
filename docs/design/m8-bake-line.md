@@ -114,7 +114,7 @@ FqsMount.Mount(c, blobBytes, srcHash);                      // 源哈希门禁
 **主战场判断**：烘焙线的收益画像 = 装饰重的面板/窗口——真实项目 UI 量最大的部分；
 全是小交互件的包（如 Basics 演示包，24/29 因文本/动画被拒）不是它的用武之地，也无须强求。
 
-## 4.6 自动挂载（2026-08-01，CreateObject 集成落地后 §4.5 的两行手工接入退役）
+## 4.6 自动挂载（2026-08-01；对抗审查后重做，见文末事故记）
 
 `FqsAutoMount` 把 §4.5 的手工三件套折叠成一个工程级开关：
 
@@ -122,30 +122,55 @@ FqsMount.Mount(c, blobBytes, srcHash);                      // 源哈希门禁
 FqsAutoMount.enabled = true;   // 启动时一行；此后 CreateObject 全自动
 ```
 
-之后每个包创建的 GComponent 在构造收尾自动查 blob 并挂载（源哈希门禁不变）；
-blob 叶数 ≥ `deferLeafThreshold`（默认 10，即 §4.5 校准值）的组件整个构造期自动
-进入 `NGraphics.deferRenderers` 作用域——小件不 defer、大件全上的判断不再需要人做。
+之后每个包创建的 GComponent 在构造收尾**装填**（arm）自己的 blob；blob 叶数 ≥
+`deferLeafThreshold`（默认 10，即 §4.5 校准值）的组件整个构造期自动进入
+`NGraphics.deferRenderers` 作用域。
 
-**机制要点**：
+### 装填而非挂载：这是整个安全性的支点
 
-- **钩子**：`GComponent.ConstructFromResource` 首尾（`BeginConstruct`/`EndConstruct`，
-  try/finally 保证 defer 静态作用域异常安全）。同步/异步/嵌套子组件构造全覆盖；
-  嵌套构造不重复开作用域（骑外层）。
-- **blob 来源**：`blobProvider` 可插拔（bundle/Addressables 工程自接）；默认 provider
-  走 `Resources.Load("Baked/{包名}/{组件名}[_{id}].fqs")`——正是烘焙菜单的输出
-  （已迁至 `Assets/Resources/Baked/`）。重名导出组件**全部**带 `_{id}` 后缀落盘，
-  provider 镜像同一规则，按名查找永远不会摸到同名兄弟的 blob。
-- **缓存**：按 `包id/组件id` 缓存字节与叶数（`PeekLeafCount` 只读头，构造前即知
-  是否 defer）；拒绝会锁定（一次警告，不逐实例重试），重烘/换包后 `ClearCache()`。
-- **纯净性双保险**：烘焙菜单与 parity runner 全程 `suppressed`（参考实例必须走纯
-  运行时路径）；`FqsBaker.Bake` 提取前递归剥离子树内全部 mount（烘焙是 ground
-  truth，旧加速器的 quad 决不能拼进新 blob）。
-- **失败即回退**：查不到 / 头无法解析 / 哈希不符 / 绑定失败——全部静默走运行时
+第一版在构造收尾直接 `FqsMount.Mount`。对抗审查判它 critical，理由成立且已逐行核实：
+
+> 让 mount 失效的唯一机制是 `InstancedUIStream._NotifyStructure`，而它开头就是
+> `if (liveInPlaceCount == 0) return;`。构造期组件尚未挂到显示树、通常也还没有任何
+> in-place 流存在——**从构造完成到首次 extract 这段窗口里，子树的任何结构改动都无人
+> 通知 mount**。等到流真的起来做 splice 时，冻结的 blob quad 会盖住已经变了的子树：
+> 删掉的子节点仍被画出来（幽灵），内层子节点的 grayed 丢失。这不是"可弃加速器静默
+> 回退"，是静默画错。
+
+现在的形态：构造期只把字节**装填**在容器上（`Container._fqsPending`，纯数据），由外层
+流在 extract 时调 `FqsAutoMount._Realize` 才真正绑定。绑定发生在**流正在走这棵树的那一刻**，
+所以构造后的任何改动天然被看见——结构对不上就 bind 失败、回退运行时走树；对得上才 splice。
+此后的改动由既有失效阶梯负责（那时 `liveInPlaceCount > 0`，通道是活的）。
+
+### 其余审查修正
+
+| 缺陷 | 修法 |
+|---|---|
+| blob 按 `packageItem` 取，组件却由 `packageItem.getBranch()` 构建 → 分支包（本地化）挂到错分支几何，源哈希分辨不了 | 查找与烘焙两侧统一按**分支解析后**的 item（`FqsAutoMount.ResolveItem`） |
+| 默认 provider 按**名字**查，重名去重表又只统计导出项 → 非导出组件被喂到同名导出组件的 blob（拓扑相同就 bind 成功，静默错图） | 只对 `exported` 项查找；文件名 = `名字_id`，**id 定身份**。重名、非导出遮蔽、大小写不敏感文件系统冲突一次全消 |
+| `GRoot.contentScaleLevel` 决定构造期选哪套图集项，却不在过期键里 → 高 DPI 设备静默渲染 x1 美术 | 烘焙把档位写进 `BlobFlags` 位 8-15，挂载时不符即拒 |
+| 缓存按包 **id** 存活 → 卸载重载同名包后，用旧哈希校验旧 blob | 全部改挂在 **UIPackage 实例**上（`ConditionalWeakTable`），包一走缓存自然消亡 |
+| 任何拒绝都清空缓存字节 → 一个实例的偶发失败，永久剥夺后续健康实例的 blob | 只有**字节确定性**失败（不是本版本 blob）才锁定；实例级拒绝只静默重复警告 |
+| 非 Resources 包（bundle/Addressables）哈希为 0 → 过期门禁静默失效，而这恰是 blob 与包分开发布的部署形态 | 新增 `requireSourceHash`（**默认 true**）：算不出哈希就拒绝挂载，要接受风险须显式关掉 |
+| `FqsBaker.Bake` 直接清空调用方活树上的 mount，且拒绝路径也不恢复 | 改为**摘下-恢复**（try/finally），烘焙纯净性不变而调用方的树完好 |
+| 烘焙菜单 `suppressed` 硬置回 false、对拍门在 try 外设置 | 两处都改为保存-恢复，且置位挪进受保护区 |
+
+### 机制要点
+
+- **钩子**：`GComponent.ConstructFromResource` 首尾（try/finally 保证 defer 静态作用域
+  异常安全）。同步/异步/嵌套子组件构造全覆盖；嵌套构造骑外层不重复开作用域。
+- **blob 来源**：`blobProvider` 可插拔（bundle/Addressables 工程自接），默认
+  `Resources.Load("Baked/{包名}/{组件名}_{id}")`，与烘焙菜单输出（`Assets/Resources/Baked/`，
+  已 gitignore）同一套命名，唯一来源是 `FqsAutoMount.BlobFileName`。
+- **失败即回退**：查不到 / 头无法解析 / 哈希不符 / 档位不符 / 绑定失败——全部静默走运行时
   树遍历，与手工 Mount 的可弃加速器语义一致。
+- **已知取舍**：装填了 blob 的组件若最终**没有**进入任何 in-place 流，其 renderless 叶会
+  在 M8-5 宽限期（2 帧）后才物化渲染器。烘过的组件本就是打算走流的，可接受；不想要就把
+  `deferLeafThreshold` 设为 -1（只挂载不 defer）。
 
-验收：`FqsAutoMountSuite` 12 项（开关/缓存/锁定拒绝/defer 阈值/嵌套作用域/像素
-对照/陈旧回退），并入全量门禁；默认 provider 经真实菜单烘焙 + Resources 加载
-端到端冒烟通过。
+验收：`FqsAutoMountSuite` 20 项，其中 8 项是**以审查确认的缺陷为名**的回归项
+（装填/兑现时序、删除内容不留幽灵、id 身份、非导出不查、分支键、档位门、无哈希拒绝、
+烘焙恢复调用方 mount），并入全量门禁。
 
 ## 5. 风险与对策
 
@@ -167,5 +192,5 @@ blob 叶数 ≥ `deferLeafThreshold`（默认 10，即 §4.5 校准值）的组�
 | 2026-07-30 | M8-3 | ✅ | 生成器专项 12/12（phase A 7 + phase B 5）：29 个导出组件全量生成 enum facade（嵌套页 enum + 类型化 {ctrl}Page 属性 + m_ 子引用按索引构造期绑定 + int-switch 桥）；幂等重烘二次零写盘；边界用例（关键字 @escape、数字前缀、标点折叠 dedup）；域重载后 35 个生成类型可加载，Demo_ButtonView 实测 31 子引用全非空、enum 翻页直驱运行时控制器。编辑器与桌面双编译零警告；**编译期报错演示**：删页/改名探针 4 个 CS0117/CS1061。与 OpenFairy 形态的偏差已记：我们是纯类 facade 构造期绑定（无 prefab 序列化接线，[SerializeField] internal 不适用）；两阶段域重载为 SessionState pending + DidReloadScripts 结算日志（本站无烘焙期消费生成类型的环节，机制为后站备用）。 |
 | 2026-07-31 | M8-4 | ✅ | 范围裁定后交付两条**挂载 tier**（gear 数值本经既有通道已是 tier-2，复刻按页常量表反而引入第二套 gear 实现的漂移风险——常量表顺延至真正需要它的 M8-5 无对象叶）：①可见性 tier——visible 切换在有效挂载内改走段区改写（隐=清零、显=补队列同帧重建），setter 重构为 tier 先行、接管则跳过 InvalidateBatchingState/结构通知；拼接期按活标志无状态重放；blob 缺席内容的显示→优雅失效回退运行时（守卫不依赖 mesh 构建态）。②挂载内容器变换 tier——M8-2 的失效降级为逐叶 tier-2 重写（槽相对矩阵天然精确），并置 _slotsDirty 刷新骑槽 clip 窗口。验收：g 系列 16/16（隐/显/容器隐/内部移动全零 Extract、mount 保持有效、重拼接后隐藏态无状态保持、缺席显示优雅失效）；t 系列 4/4——六状态脚本序列（移动/隐显/alpha/clip 移动）**逐状态像素零差**且挂载播放全程零 Extract（= transition 播放路径等价性门）。回归 15+19+10+11 全绿。 |
 | 2026-07-31 | M8-5 | ✅ | 形态：**renderless NGraphics**（`NGraphics.deferRenderers` 作用域内创建的叶跳过 MeshFilter/MeshRenderer/Mesh 三件套与 mesh 构建；GameObject/transform 保留——tier-2 矩阵与命中测试的依据）。物化阶梯：流读取按需建 mesh（ExtractLeaf/UpdateLeaf）、释放/未认领宽限期后物化 renderer、认领期永不物化。奠基发现：**跨实例挂载开箱即用**（blob 烘自 A 挂到结构相同的新实例 B——生产 CreateObject 流）；成本分解 create 74%+firstUpdate 24%、M8-2 机制≈免费。验收 14/14：renderless 认领像素与运行时参照 diff=0、tier-2/颜色 tier 全程无 renderer、命中测试无 renderer 可点（整块可点门）、释放物化后原生渲染、无挂载时运行时走树认领回退。**成本门：80 叶打开 1.85→0.93ms = 50% 降幅**（门槛 ≥40%）。备注：显式 hit 面数据留给未来"全无对象"形态（本形态保留 GameObject，FairyGUI 命中天然工作）；常量表（承 M8-4 顺延）在本形态同样未被需要——活对象 gear 机制照常驱动 renderless 叶。 |
-| 2026-08-01 | 自动挂载 | ✅ | **§4.5 手工两行接入退役**（详见 §4.6）：`FqsAutoMount.enabled = true` 一行后 CreateObject 全自动——构造钩子（Begin/End try-finally）查 provider（默认 Resources 镜像烘焙命名，重名全 `_{id}` 后缀零歧义）、源哈希门禁照旧、叶数 ≥ 阈值自动开 defer 作用域（嵌套骑外层）；拒绝锁定防逐实例重试；烘焙菜单/parity runner 双侧 suppressed + `FqsBaker.Bake` 提取前递归剥 mount（烘焙纯净性双保险）。验收：`FqsAutoMountSuite` 12/12（像素对照 diff=0、陈旧回退、缓存/锁定/嵌套作用域），全量门禁 239/239×2 新鲜会话 + 双后端 478/478，默认 provider 真菜单烘焙（Basics 5 blob）→ Resources 零配置挂载端到端冒烟通过。 |
+| 2026-08-01 | 自动挂载 | ✅ | **一次事故记，值得留档**：首版（构造期直接 Mount）三道门全绿——桌面/Unity 编译、专项 12/12、全量 239/239 双后端 478/478、对拍 PASS、真实包 dogfood 零拒绝——然后被 28 代理对抗审查判出 **18 条确认缺陷（4 条 critical）**。教训不是"门不够"，是**门只验了我想到的场景**：全部 12 项断言都建立在"构造完立刻挂载"这个前提上，而缺陷恰恰在这个前提本身。critical 的共性是**跨越"流尚未存在"窗口的绑定**（`_NotifyStructure` 在 `liveInPlaceCount == 0` 时是死通道）与**按名字而非 id 认身份**（非导出组件/分支/大小写全是同一个洞）。重做形态见 §4.6：装填-兑现分离 + id 定身份 + 档位门 + 实例级缓存 + 默认拒绝无哈希 blob。验收 `FqsAutoMountSuite` 20 项（8 项以缺陷命名的回归项）+ 全量门禁 + 双后端。 |
 | 2026-07-31 | M8-6 | ✅ | **烘焙线收官**。FqsParityRunner 常设门禁（菜单 Tools/FairyGUI/Run FQS Parity + `Run()` CI 入口 + Temp/FqsParityResults.txt + 机读判定行）：catalog = 加载包全部导出组件**枚举不抽样**（不可烘按精确理由 SKIP，非失败）+ 3 个程序化场景（clip/SDF/嵌套 clip）；每案两遍全新实例——运行时走树 vs deferred+挂载——双层断言：像素区域 diff=0 + 几何快照（quad rect/uv/color 容差 1e-4、语义 flags 掩码比对——texIndex/段布局两次编译可合法不同）+ 叶数相等。篡改阶梯：坏 blob（含敌意计数）拒绝、错源哈希拒绝、正确哈希挂载、全程像素完好。首跑判定 **PASS（9 过 0 败 24 跳）**。回归 15+19+16+14+11 全绿（m8_5 的 r7 性能门在长会话内一次误报 18%、新鲜 Play 会话复测 45%——**性能门必须在新鲜会话跑**，长会话的 GC/驱动债务会扭曲微基准，已列为运行纪律）。FQS 菜单共两个入口（Bake / Parity），守住三菜单纪律。 |

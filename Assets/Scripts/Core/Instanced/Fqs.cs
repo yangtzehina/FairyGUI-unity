@@ -29,6 +29,22 @@ namespace FairyGUI
         {
             None = 0,
             NoSourceHash = 1, //programmatic bake or fui bytes unavailable
+            //bits 8-15 carry the bake-time GRoot.contentScaleLevel. It selects
+            //which image items a component builds from (PackageItem.
+            //getHighResolution), so a blob baked at one level holds the other
+            //level's atlas rects — and the package source hash cannot tell:
+            //it is one hash over one _fui for every level.
+            ScaleLevelMask = 0xFF00,
+        }
+
+        public static uint EncodeScaleLevel(int level)
+        {
+            return ((uint)Mathf.Clamp(level, 0, 255) << 8) & (uint)BlobFlags.ScaleLevelMask;
+        }
+
+        public static int DecodeScaleLevel(BlobFlags flags)
+        {
+            return (int)(((uint)flags & (uint)BlobFlags.ScaleLevelMask) >> 8);
         }
 
         public enum TexRefKind : byte
@@ -328,10 +344,28 @@ namespace FairyGUI
             if (FindDynamicObject(root) is string dynWhere)
             { refuseReason = dynWhere + ": content is runtime state"; return null; }
 
-            //a bake is ground truth from the runtime walk: any mount in the
-            //subtree (auto-mount attaches at construction) would SPLICE its
-            //old quads into the new blob — strip them all before extracting
-            ClearMounts(root);
+            //a bake is ground truth from the runtime walk: any mount (or armed
+            //blob) in the subtree would SPLICE old quads into the new blob.
+            //Detach them for the extract and put them back on every exit path
+            //— Bake may be called on a live tree the caller still renders.
+            var savedMounts = new List<KeyValuePair<Container, FqsMount>>();
+            var savedPending = new List<KeyValuePair<Container, FqsAutoMount.Pending>>();
+            DetachMounts(root, savedMounts, savedPending);
+            try
+            {
+                return BakeCore(root, fuiHash, out refuseReason, allowExternalTextures);
+            }
+            finally
+            {
+                for (int i = 0; i < savedMounts.Count; i++)
+                    savedMounts[i].Key._fqsMount = savedMounts[i].Value;
+                for (int i = 0; i < savedPending.Count; i++)
+                    savedPending[i].Key._fqsPending = savedPending[i].Value;
+            }
+        }
+
+        static byte[] BakeCore(Container root, ulong fuiHash, out string refuseReason, bool allowExternalTextures)
+        {
 
             //pin the compile backend: the vertex path coarsens clip regions past
             //its uniform-array limit, and a bake must not depend on the editor's
@@ -380,7 +414,8 @@ namespace FairyGUI
                 {
                     formatVersion = FqsBlob.FormatVersion,
                     fuiHash = fuiHash,
-                    flags = fuiHash == 0 ? FqsBlob.BlobFlags.NoSourceHash : FqsBlob.BlobFlags.None,
+                    flags = (fuiHash == 0 ? FqsBlob.BlobFlags.NoSourceHash : FqsBlob.BlobFlags.None)
+                        | (FqsBlob.BlobFlags)FqsBlob.EncodeScaleLevel(GRoot.contentScaleLevel),
                     quads = quads.ToArray(),
                     segs = new FqsSegRecord[segs.Count],
                     leaves = new FqsLeafRecord[leaves.Count],
@@ -458,13 +493,24 @@ namespace FairyGUI
             return null;
         }
 
-        static void ClearMounts(Container c)
+        static void DetachMounts(Container c,
+            List<KeyValuePair<Container, FqsMount>> mounts,
+            List<KeyValuePair<Container, FqsAutoMount.Pending>> pending)
         {
-            c._fqsMount = null;
+            if (c._fqsMount != null)
+            {
+                mounts.Add(new KeyValuePair<Container, FqsMount>(c, c._fqsMount));
+                c._fqsMount = null;
+            }
+            if (c._fqsPending != null)
+            {
+                pending.Add(new KeyValuePair<Container, FqsAutoMount.Pending>(c, c._fqsPending));
+                c._fqsPending = null;
+            }
             int cnt = c.numChildren;
             for (int i = 0; i < cnt; i++)
                 if (c.GetChildAt(i) is Container cc)
-                    ClearMounts(cc);
+                    DetachMounts(cc, mounts, pending);
         }
 
         internal const ulong FnvSeed = 0xcbf29ce484222325UL;

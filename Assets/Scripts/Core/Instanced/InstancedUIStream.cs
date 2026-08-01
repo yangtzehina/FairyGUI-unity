@@ -1176,6 +1176,8 @@ namespace FairyGUI
                     //M8-2: a valid baked mount splices its precompiled stream
                     //instead of walking the subtree (in-place streams only —
                     //the baker's replica must always walk real content)
+                    if (_inPlace && c._fqsPending != null)
+                        FqsAutoMount._Realize(c); //bind against the tree we are walking now
                     if (_inPlace && c._fqsMount != null)
                     {
                         FqsMount fm = c._fqsMount;

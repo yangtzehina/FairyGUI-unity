@@ -49,10 +49,10 @@ namespace FairyGUIEditor
             //the runtime reference instances must stay on the pure runtime
             //walk: an auto-mounted reference would compare a blob to itself
             bool savedSuppress = FqsAutoMount.suppressed;
-            FqsAutoMount.suppressed = true;
             target.instancedRendering = true;
             Stage.inst.ForceUpdate();
 
+            FqsAutoMount.suppressed = true;
             try
             {
                 //--- catalog part 1: every bakeable exported component ---

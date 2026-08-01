@@ -42,7 +42,7 @@ FairyGUI-unity 的现代化 fork（分支 `poc/gpu-instanced-ui`，名字已名�
 2. `Tools/FairyGUI/Run FQS Parity` —— 常设对照门禁（枚举不抽样 + 像素/几何双层 + 篡改阶梯），
    结果写 `Temp/FqsParityResults.txt`，判定行 `FQS PARITY VERDICT: PASS|FAIL`。
 3. `FairyGUI/Instanced UI Streams` —— 流诊断面板（段/quads/槽/认领/重编译计数）。
-4. `Tools/FairyGUI/Run Validation Suites` —— 跑仓库内的 239 项行为/像素/不变量套件
+4. `Tools/FairyGUI/Run Validation Suites` —— 跑仓库内的 247 项行为/像素/不变量套件
    （需已在 Play 模式；无头形态见下）。
 5. `Tools/FairyGUI/Run Perf Gates` —— 墙钟比值门（需新鲜 Play 会话）。
 
@@ -65,7 +65,7 @@ CI 类入口（非菜单）：
   绿了才提交，提交信息里写验收数字。
 - **后端覆盖：两条都要跑**。历史上本机编辑器的 buffer 路径（顶点级 StructuredBuffer）
   静默不出图，所以套件默认 `forceVertexPath = true`。**2026-07-31 复测该怪癖不再复现**
-  （对照实验确认像素来自实例 draw），buffer 后端 227/227 全绿，双后端 454/454（自动挂载并入后 239 项，双后端 478/478）。
+  （对照实验确认像素来自实例 draw），buffer 后端 227/227 全绿，双后端 454/454（自动挂载并入后 247 项，双后端 494/494）。
   默认仍留顶点流（怪癖若复发验证照跑），但**验收应跑 `-ciBackend both`**：两条后端是
   同一语义的两套 shader + 上传实现，只跑一条等于覆盖了一半。切换用
   `InstancedValidationEnv.useVertexBackend` / `InstancedValidationAll.RunOn(bool)` /
@@ -82,8 +82,8 @@ CI 类入口（非菜单）：
 - **像素探针坐标**：`(逻辑坐标) × GRoot.contentScaleFactor` → 屏幕像素，y 翻转
   `RH-1-y`。验证前确认演示场景已打开（见踩坑第 3 条）。
 - **验证套件已全部固化进仓库**：`Assets/Examples/InstancedPoC/Validation/`
-  （17 套 239 项：M1 重组器 17、M3 裁剪栈 10、M7 SDF 17、M4 场景 19、批1-4
-  14/8/19/10/12、批5 曲线文本 10、M8-1/2/4/5 15/19/20/14、自动挂载 12、
+  （17 套 247 项：M1 重组器 17、M3 裁剪栈 10、M7 SDF 17、M4 场景 19、批1-4
+  14/8/19/10/12、批5 曲线文本 10、M8-1/2/4/5 15/19/20/14、自动挂载 20、
   性能不变量 12、MVVM 11）。
   跑法、harness 约定与坑见该目录 `README.md`；一条
   `eval "return InstancedValidationAll.Run();"` 跑完全部。
@@ -156,6 +156,15 @@ CI 类入口（非菜单）：
 17. **像素探针不要压几何边缘**：滚动/矩阵写有半像素取整，探针落在色带边界
     （或色带间隙旁）会随会话状态翻转。探针至少离边缘 10px，且 Check 消息里
     带上实测 RGB（a7 教训：三腿合一的裸 bool 无法定位失败腿）。
+18. **跨越"流尚未存在"窗口的绑定必须推迟**：`_NotifyStructure` / `_NotifyTransform`
+    开头都是 `if (liveInPlaceCount == 0) return;`——**没有活跃 in-place 流时，推送通道
+    是死的**。任何在这个窗口里建立、却指望通道来失效的绑定（mount、认领、缓存的
+    叶引用）都会带着过期状态活到流起来那一刻，然后静默画错。构造期只允许留**纯数据**，
+    真正的绑定交给流在 extract 时做——那一刻它正走着这棵树，看到的必然是当前结构。
+19. **身份用 id，不用名字**：FairyGUI 允许同名 item（`_itemsByName` 后者覆盖前者），
+    非导出组件也能与导出组件同名，分支变体是另一个 item，而 macOS 文件系统大小写
+    不敏感。任何按名字建立的产物↔运行时对应关系（烘焙文件名、缓存键）都会在这四条
+    里的某一条上静默串味。文件名要给人看就写 `名字_id`，让 id 定身份。
 
 ## 文档地图
 

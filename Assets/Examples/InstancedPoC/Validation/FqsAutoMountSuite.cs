@@ -5,16 +5,23 @@ using FairyGUI;
 using UnityEngine;
 
 /// <summary>
-/// Auto-mount suite (M8 follow-on, 12 checks): FqsAutoMount turns the manual
-/// two-line bake integration into a per-project switch — package-created
-/// components look up blobs through a pluggable provider at construction,
-/// mount behind the source-hash gate, and blobs at/over the leaf threshold
-/// construct inside an M8-5 defer-renderers scope. Covers the disabled and
-/// suppressed paths, the provider cache and locked-in refusals, the defer
-/// threshold, nested-scope safety, pixel parity of an auto-mounted instance
-/// against its runtime-walk twin, and the staleness refusal with runtime-walk
-/// fallback. Uses the real "Basics" example package (auto-mount only engages
-/// on package-created components).
+/// Auto-mount suite (M8 follow-on, 20 checks). FqsAutoMount turns the manual
+/// two-line bake integration into a per-project switch: package-created
+/// components look up blobs through a pluggable provider at construction, ARM
+/// them on the container, and the enclosing stream realizes the mount at
+/// extract. Blobs at/over the leaf threshold construct inside an M8-5
+/// defer-renderers scope.
+///
+/// Half of these checks exist because an adversarial review of the first
+/// implementation confirmed 18 defects in it; each such check names the
+/// hazard it pins down, so a regression reads as the original bug:
+///  - arm-then-realize (structure edited between construction and the first
+///    extract must NOT splice frozen quads — the original mounted at
+///    construction, where _NotifyStructure is inert with no live stream)
+///  - identity by item id (a NON-exported component must never be served an
+///    exported component's blob; duplicate/case-colliding names likewise)
+///  - branch-resolved keying, content-scale-level gating, per-package-INSTANCE
+///    caches, and refusing blobs with no verifiable source hash
 ///
 /// Returns a "RESULT pass=N fail=N" report.
 /// </summary>
@@ -22,8 +29,11 @@ public static class FqsAutoMountSuite
 {
     static readonly FieldInfo sSpliced =
         typeof(FqsMount).GetField("spliced", BindingFlags.NonPublic | BindingFlags.Instance);
+    static readonly FieldInfo sPending =
+        typeof(Container).GetField("_fqsPending", BindingFlags.NonPublic | BindingFlags.Instance);
 
     static bool Spliced(FqsMount m) { return m != null && sSpliced != null && (bool)sSpliced.GetValue(m); }
+    static bool Armed(GComponent c) { return sPending != null && sPending.GetValue((Container)c.displayObject) != null; }
 
     static void CollectLeaves(Container c, List<NGraphics> outList)
     {
@@ -45,19 +55,20 @@ public static class FqsAutoMountSuite
         int savedThreshold = FqsAutoMount.deferLeafThreshold;
         var savedProvider = FqsAutoMount.blobProvider;
         bool savedSuppressed = FqsAutoMount.suppressed;
+        bool savedRequire = FqsAutoMount.requireSourceHash;
+        int savedScale = UIContentScaler.scaleLevel;
         bool prevLog = Debug.unityLogger.logEnabled;
         GComponent reference = null, inst = null;
         try
         {
             FqsAutoMount.enabled = false;
             FqsAutoMount.suppressed = false;
+            FqsAutoMount.requireSourceHash = true;
             FqsAutoMount.ClearCache();
 
             UIPackage pkg = UIPackage.GetByName("Basics") ?? UIPackage.AddPackage("UI/Basics");
             ulong srcHash = FqsAutoMount.PackageSourceHash(pkg);
 
-            //find the first bakeable exported component; its instance stays on
-            //as the runtime-walk twin for the pixel checks
             PackageItem chosen = null;
             byte[] blob = null;
             Debug.unityLogger.logEnabled = false; //mute per-item refusal logs
@@ -88,7 +99,6 @@ public static class FqsAutoMountSuite
             if (chosen == null)
                 return env.Report();
 
-            //fit the twins inside the capture area
             if (reference.width > 290 || reference.height > 400)
             {
                 float fit = Mathf.Min(290f / reference.width, 400f / reference.height);
@@ -101,8 +111,10 @@ public static class FqsAutoMountSuite
 
             int providerCalls = 0;
             byte[] served = blob;
+            PackageItem lastAsked = null;
             FqsAutoMount.blobProvider = (p, it) =>
             {
+                lastAsked = it;
                 if (p == pkg && it == chosen)
                 {
                     providerCalls++;
@@ -120,45 +132,89 @@ public static class FqsAutoMountSuite
                 return c;
             }
 
-            //--- c3: master switch off -> no lookup, no mount ----------------
+            //--- c3: master switch off -> no lookup, no arming ---------------
             inst = Create();
-            env.Check("c3.disabled: no mount and the provider is never asked",
-                FqsMount.Of(inst) == null && providerCalls == 0);
+            env.Check("c3.disabled: nothing armed and the provider is never asked",
+                !Armed(inst) && FqsMount.Of(inst) == null && providerCalls == 0);
             inst.Dispose();
 
-            //--- c4: enabled, threshold above blob -> mount, no defer --------
+            //--- c4: enabled -> ARMED at construction, NOT mounted -----------
+            //(the original implementation mounted here; that is the defect the
+            //arm/realize split exists to remove)
             FqsAutoMount.enabled = true;
             FqsAutoMount.deferLeafThreshold = leafCount + 1;
+            inst = Create();
+            env.Check("c4.construction arms the blob and does NOT bind it yet",
+                Armed(inst) && FqsMount.Of(inst) == null);
+
+            //--- c5: the enclosing stream realizes it at extract -------------
             int m0 = FqsAutoMount.mountedCount;
+            env.root.instancedRendering = true;
+            env.Step(2);
+            env.Check("c5.the enclosing stream realizes the mount at extract",
+                FqsMount.Of(inst) != null && !Armed(inst)
+                && FqsAutoMount.mountedCount == m0 + 1 && Spliced(FqsMount.Of(inst)));
+            inst.Dispose();
+            env.Step(1);
+
+            //--- c6: cache serves repeat instances ---------------------------
+            int calls0 = providerCalls;
+            inst = Create();
+            env.Step(2);
+            env.Check("c6.repeat instance mounts from cache (provider not re-asked)",
+                FqsMount.Of(inst) != null && providerCalls == calls0);
+            inst.Dispose();
+            env.Step(1);
+
+            //--- c7: REGRESSION — content REMOVED before the first extract ---
+            //The hazard is a mount bound while no stream is live: with
+            //liveInPlaceCount == 0 the _NotifyStructure invalidation channel is
+            //inert, so the removal goes unseen and the blob keeps painting the
+            //removed child — a ghost. (Appending a child is NOT the test: it
+            //leaves every existing child index, hence every baked pathHash,
+            //intact, so the bind legitimately still succeeds.)
+            //Compared against a runtime-walk twin carrying the same edit.
+            reference.visible = false;
+            FqsAutoMount.enabled = false;
+            env.root.instancedRendering = false;
+            env.Step(1);
+            var twin = Create();
+            twin.SetXY(10, 10);
+            twin.RemoveChildAt(0);
+            env.root.instancedRendering = true;
+            env.Step(2);
+            var pxTwin = env.Capture();
+            twin.Dispose();
+            env.root.instancedRendering = false;
+            env.Step(1);
+
+            FqsAutoMount.enabled = true;
+            inst = Create();
+            inst.SetXY(10, 10);
+            inst.RemoveChildAt(0); //structure edit before any extract
+            env.root.instancedRendering = true;
+            env.Step(2);
+            var pxEdited = env.Capture();
+            double m7, b7;
+            env.DiffStats(pxTwin, pxEdited, reference, 2, 2, reference.width - 2, reference.height - 2, out m7, out b7);
+            env.Check($"c7.content removed before the first extract leaves no ghost (mean={m7:F3} bad={b7:F3}%)",
+                FqsMount.Of(inst) == null && m7 < 1.5 && b7 < 0.5);
+            inst.Dispose();
+            reference.visible = true;
+            env.Step(1);
+
+            //--- c8: defer scope engages and the splice claims the leaves ----
+            FqsAutoMount.deferLeafThreshold = 1;
             inst = Create();
             var leaves = new List<NGraphics>();
             CollectLeaves((Container)inst.displayObject, leaves);
-            bool allNative = leaves.Count > 0 && leaves.TrueForAll(g => g.meshRenderer != null);
-            env.Check("c4.mounts under the defer threshold with ordinary renderers",
-                FqsMount.Of(inst) != null && FqsAutoMount.mountedCount == m0 + 1 && allNative);
-            inst.Dispose();
-
-            //--- c5: the cache serves repeat instances -----------------------
-            int calls0 = providerCalls;
-            inst = Create();
-            env.Check("c5.repeat instance mounts from cache (provider not re-asked)",
-                FqsMount.Of(inst) != null && providerCalls == calls0);
-            inst.Dispose();
-
-            //--- c6: defer scope engages and the splice claims the leaves ----
-            FqsAutoMount.deferLeafThreshold = 1;
-            inst = Create();
-            leaves.Clear();
-            CollectLeaves((Container)inst.displayObject, leaves);
             bool renderless = leaves.Count > 0 && leaves.TrueForAll(g => g.meshRenderer == null);
-            env.root.instancedRendering = true;
             env.Step(2);
             bool stillRenderless = leaves.TrueForAll(g => g.meshRenderer == null);
-            env.Check("c6.threshold defers renderers and the splice claims them",
+            env.Check("c8.threshold defers renderers and the splice claims them",
                 renderless && Spliced(FqsMount.Of(inst)) && stillRenderless);
 
-            //--- c7: pixel parity vs the runtime-walk twin -------------------
-            //same spot, alternating visibility (the parity-runner pattern)
+            //--- c9: pixel parity vs the runtime-walk twin -------------------
             inst.visible = false;
             env.Step(1);
             var pxRef = env.Capture();
@@ -169,11 +225,12 @@ public static class FqsAutoMountSuite
             var pxAuto = env.Capture();
             double mean, badPct;
             env.DiffStats(pxRef, pxAuto, reference, 2, 2, reference.width - 2, reference.height - 2, out mean, out badPct);
-            env.Check($"c7.auto-mounted pixels match the runtime walk (mean={mean:F3} bad={badPct:F3}%)",
+            env.Check($"c9.auto-mounted pixels match the runtime walk (mean={mean:F3} bad={badPct:F3}%)",
                 mean < 1.5 && badPct < 0.5);
             inst.Dispose();
+            env.Step(1);
 
-            //--- c8: stale blob refused, runtime walk still renders ----------
+            //--- c10: stale blob refused, runtime walk still renders ---------
             FqsAutoMount.ClearCache();
             var tampered = (byte[])blob.Clone();
             tampered[8] ^= 0xFF; //first fuiHash byte: parses fine, gate trips
@@ -181,55 +238,158 @@ public static class FqsAutoMountSuite
             int r0 = FqsAutoMount.refusedCount;
             Debug.unityLogger.logEnabled = false;
             inst = Create();
-            Debug.unityLogger.logEnabled = prevLog;
             inst.SetXY(10, 10);
-            env.Step(1);
+            env.Step(2);
+            Debug.unityLogger.logEnabled = prevLog;
             var pxStale = env.Capture();
             env.DiffStats(pxRef, pxStale, reference, 2, 2, reference.width - 2, reference.height - 2, out mean, out badPct);
-            env.Check($"c8.stale blob refused, fallback renders (mean={mean:F3} bad={badPct:F3}%)",
+            env.Check($"c10.stale blob refused, fallback renders (mean={mean:F3} bad={badPct:F3}%)",
                 FqsMount.Of(inst) == null && FqsAutoMount.refusedCount == r0 + 1
                 && mean < 1.5 && badPct < 0.5);
+            inst.Dispose();
+            env.Step(1);
 
-            //--- c9: the refusal is locked in --------------------------------
-            int calls1 = providerCalls;
-            int r1 = FqsAutoMount.refusedCount;
-            var inst2 = Create();
-            env.Check("c9.refusal locked in: no re-parse, no second refusal",
-                FqsMount.Of(inst2) == null && providerCalls == calls1
-                && FqsAutoMount.refusedCount == r1);
-            inst2.Dispose();
-
-            //--- c10: suppression wins over the master switch ----------------
-            FqsAutoMount.ClearCache();
+            //--- c11: REGRESSION — a per-instance refusal is not locked in ---
+            //The original nulled the cached bytes on any refusal, so one
+            //unlucky instance denied the blob to every later healthy one.
             served = blob;
+            FqsAutoMount.ClearCache();
+            Debug.unityLogger.logEnabled = false;
+            var bad = Create();
+            bad.RemoveChildAt(0); //make THIS instance unbindable (a baked leaf is gone)
+            env.Step(2);
+            bool badRefused = FqsMount.Of(bad) == null;
+            bad.Dispose();
+            env.Step(1);
+            var good = Create();
+            env.Step(2);
+            Debug.unityLogger.logEnabled = prevLog;
+            env.Check("c11.an instance-specific refusal does not deny the blob to healthy instances",
+                badRefused && FqsMount.Of(good) != null);
+            good.Dispose();
+            env.Step(1);
+
+            //--- c12: suppression wins over the master switch ----------------
             FqsAutoMount.suppressed = true;
             var inst3 = Create();
-            env.Check("c10.suppressed: bake/parity instances never auto-mount",
-                FqsMount.Of(inst3) == null);
+            env.Step(2);
+            env.Check("c12.suppressed: bake/parity instances never arm or mount",
+                !Armed(inst3) && FqsMount.Of(inst3) == null);
             FqsAutoMount.suppressed = false;
             inst3.Dispose();
+            env.Step(1);
 
-            //--- c11: an outer defer scope is left untouched -----------------
+            //--- c13: an outer defer scope is left untouched -----------------
             NGraphics.deferRenderers = true;
             var inst4 = Create();
             bool scopeKept = NGraphics.deferRenderers;
             NGraphics.deferRenderers = false;
-            env.Check("c11.nested construction rides an outer defer scope",
+            env.Step(2);
+            env.Check("c13.nested construction rides an outer defer scope",
                 scopeKept && FqsMount.Of(inst4) != null);
             inst4.Dispose();
+            env.Step(1);
 
-            //--- c12: the staleness gate is live -----------------------------
-            env.Check("c12.blob hash equals the recomputed package source hash",
+            //--- c14: the staleness gate is live -----------------------------
+            env.Check("c14.blob hash equals the recomputed package source hash",
                 FqsBlob.Read(blob).fuiHash == FqsAutoMount.PackageSourceHash(pkg));
+
+            //--- c15: REGRESSION — identity is the item id, not the name -----
+            //Two components with the same name (one exported, one not) must
+            //never resolve to the same blob file.
+            PackageItem other = null;
+            foreach (var it in pkg.GetItems())
+                if (it.type == PackageItemType.Component && it != chosen) { other = it; break; }
+            env.Check("c15.blob file identity carries the item id, so same-named items never collide",
+                other != null
+                && FqsAutoMount.BlobFileName(chosen) != FqsAutoMount.BlobFileName(other)
+                && FqsAutoMount.BlobFileName(chosen).EndsWith("_" + chosen.id));
+
+            //--- c16: REGRESSION — non-exported components are never looked up
+            lastAsked = null;
+            int callsBefore = providerCalls;
+            PackageItem nonExported = null;
+            foreach (var it in pkg.GetItems())
+                if (it.type == PackageItemType.Component && !it.exported) { nonExported = it; break; }
+            bool nonExportedClean = true;
+            if (nonExported != null)
+            {
+                var ne = UIPackage.CreateObjectFromURL("ui://" + pkg.id + nonExported.id) as GComponent;
+                if (ne != null)
+                {
+                    nonExportedClean = !Armed(ne) && FqsMount.Of(ne) == null && providerCalls == callsBefore;
+                    ne.Dispose();
+                }
+            }
+            env.Check($"c16.non-exported components are never served a blob (found={(nonExported != null)})",
+                nonExportedClean);
+
+            //--- c17: REGRESSION — branch-resolved item keys the lookup ------
+            env.Check("c17.lookup keys on the branch-resolved item",
+                FqsAutoMount.ResolveItem(chosen) == chosen.getBranch());
+
+            //--- c18: REGRESSION — content scale level gates the mount -------
+            //A blob baked at another level holds the other level's atlas rects
+            //and the package source hash cannot tell the difference.
+            int bakedLevel = FqsBlob.DecodeScaleLevel(FqsBlob.Read(blob).flags);
+            UIContentScaler.scaleLevel = bakedLevel + 1;
+            Debug.unityLogger.logEnabled = false;
+            var scaleInst = Create();
+            env.Step(2);
+            Debug.unityLogger.logEnabled = prevLog;
+            bool scaleRefused = FqsMount.Of(scaleInst) == null;
+            scaleInst.Dispose();
+            UIContentScaler.scaleLevel = savedScale;
+            env.Step(1);
+            env.Check($"c18.a blob baked at another contentScaleLevel is refused (baked={bakedLevel})",
+                bakedLevel == savedScale && scaleRefused);
+
+            //--- c19: REGRESSION — an unverifiable blob cannot pass the gate -
+            //requireSourceHash exists because bundle/Addressables deployments
+            //are exactly the ones that ship blobs apart from their packages.
+            //A blob baked without a source hash carries NoSourceHash, and that
+            //must never satisfy a caller supplying a real expected hash.
+            var noHashSrc = Create();
+            env.Step(2);
+            Debug.unityLogger.logEnabled = false;
+            byte[] unverifiable = FqsBaker.Bake((Container)noHashSrc.displayObject, 0, out _);
+            noHashSrc.Dispose();
+            env.Step(1);
+            var probe = Create();
+            env.Step(2);
+            bool refusedUnverifiable = unverifiable != null
+                && (FqsBlob.Read(unverifiable).flags & FqsBlob.BlobFlags.NoSourceHash) != 0
+                && !FqsMount.Mount(probe, unverifiable, srcHash)
+                && FqsMount.Mount(probe, unverifiable); //no expectation -> accepted
+            probe.Dispose();
+            Debug.unityLogger.logEnabled = prevLog;
+            env.Step(1);
+            env.Check("c19.a blob with no source hash is refused whenever a hash is expected",
+                FqsAutoMount.requireSourceHash && refusedUnverifiable);
+
+            //--- c20: REGRESSION — Bake restores the caller's mounts ---------
+            //Bake detaches mounts so it never freezes an accelerator into a new
+            //blob, but the caller's live tree must survive the call intact.
+            var keeper = Create();
+            env.Step(2);
+            FqsMount before = FqsMount.Of(keeper);
+            FqsBaker.Bake((Container)keeper.displayObject, srcHash, out _);
+            env.Check("c20.Bake leaves the caller's live mount attached",
+                before != null && FqsMount.Of(keeper) == before);
+            keeper.Dispose();
+            env.Step(1);
             inst = null;
         }
         finally
         {
             Debug.unityLogger.logEnabled = prevLog;
+            UIContentScaler.scaleLevel = savedScale;
+            NGraphics.deferRenderers = false;
             FqsAutoMount.enabled = savedEnabled;
             FqsAutoMount.deferLeafThreshold = savedThreshold;
             FqsAutoMount.blobProvider = savedProvider;
             FqsAutoMount.suppressed = savedSuppressed;
+            FqsAutoMount.requireSourceHash = savedRequire;
             FqsAutoMount.ClearCache();
             env.Dispose();
         }

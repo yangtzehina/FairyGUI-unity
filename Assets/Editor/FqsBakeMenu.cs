@@ -41,6 +41,7 @@ namespace FairyGUIEditor
             //its old quads into the new blob), and a re-bake invalidates every
             //cached lookup on both sides of the pass
             FqsAutoMount.ClearCache();
+            bool savedSuppress = FqsAutoMount.suppressed;
             FqsAutoMount.suppressed = true;
             try
             {
@@ -49,10 +50,6 @@ namespace FairyGUIEditor
                     ulong hash = SourceHash(pkg);
                     if (hash == 0)
                         Debug.LogWarning($"FQS: no source hash for package '{pkg.name}' (non-Resources load) — the staleness gate is DISABLED for its blobs.");
-                    var nameCount = new System.Collections.Generic.Dictionary<string, int>();
-                    foreach (var it in pkg.GetItems())
-                        if (it.type == PackageItemType.Component && it.exported)
-                            nameCount[it.name] = nameCount.TryGetValue(it.name, out int nc) ? nc + 1 : 1;
                     var usedClassNames = new System.Collections.Generic.HashSet<string>();
                     foreach (var item in pkg.GetItems())
                     {
@@ -62,6 +59,9 @@ namespace FairyGUIEditor
                         {
                         //create by ID: duplicate exported names resolve wrong by name
                         GObject obj = UIPackage.CreateObjectFromURL("ui://" + pkg.id + item.id);
+                        //a branched package builds from the branch variant, so
+                        //that is the identity the blob must carry
+                        PackageItem contentItem = FqsAutoMount.ResolveItem(item);
                         var com = obj as GComponent;
                         if (com == null)
                         {
@@ -89,10 +89,14 @@ namespace FairyGUIEditor
                         }
                         string dir = $"Assets/Resources/Baked/{pkg.name}";
                         Directory.CreateDirectory(dir);
-                        //duplicated exported names ALL take the id suffix — the
-                        //auto-mount default provider mirrors this naming exactly
-                        string fileName = nameCount[item.name] == 1 ? item.name : item.name + "_" + item.id;
-                        File.WriteAllBytes($"{dir}/{fileName}.fqs.bytes", blob);
+                        //name for humans, id for identity (FqsAutoMount.
+                        //BlobFileName is the single source of this naming, and
+                        //the default provider reads it back the same way).
+                        //Identity by id is what makes duplicate exported names,
+                        //a non-exported component shadowing an exported one,
+                        //and case-only differences on a case-insensitive
+                        //filesystem all resolve to distinct files.
+                        File.WriteAllBytes($"{dir}/{FqsAutoMount.BlobFileName(contentItem)}.fqs.bytes", blob);
                         baked++;
                         }
                         catch (System.Exception e)
@@ -106,7 +110,7 @@ namespace FairyGUIEditor
             }
             finally
             {
-                FqsAutoMount.suppressed = false;
+                FqsAutoMount.suppressed = savedSuppress;
                 FqsAutoMount.ClearCache();
             }
             //two-phase codegen (charter §3): changed views must COMPILE before
