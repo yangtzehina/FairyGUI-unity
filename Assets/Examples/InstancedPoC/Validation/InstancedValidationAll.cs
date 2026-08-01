@@ -110,6 +110,7 @@ public static class InstancedValidationAll
         RunSuite("m8_2_mount_fusion", InstancedM82Suite.Run);
         RunSuite("m8_4_tiers", InstancedM84Suite.Run);
         RunSuite("m8_5_renderless", InstancedM85Suite.Run);
+        RunSuite("m8_automount", FqsAutoMountSuite.Run);
         RunSuite("perf_invariants", InstancedPerfInvariantSuite.Run);
         RunSuite("mvvm_reentrancy", BinderReentrancyCheck.Run);
 

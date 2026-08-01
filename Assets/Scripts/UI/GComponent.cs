@@ -1409,6 +1409,22 @@ namespace FairyGUI
 
         internal void ConstructFromResource(List<GObject> objectPool, int poolIndex)
         {
+            //M8 auto-mount: a baked blob can defer renderer creation across
+            //this construction (M8-5) and mounts once the subtree is final;
+            //the finally keeps the static defer scope exception-safe
+            bool deferScope = FqsAutoMount.BeginConstruct(this);
+            try
+            {
+                ConstructFromResourceCore(objectPool, poolIndex);
+            }
+            finally
+            {
+                FqsAutoMount.EndConstruct(this, deferScope);
+            }
+        }
+
+        void ConstructFromResourceCore(List<GObject> objectPool, int poolIndex)
+        {
             this.gameObjectName = packageItem.name;
 
             PackageItem contentItem = packageItem.getBranch();

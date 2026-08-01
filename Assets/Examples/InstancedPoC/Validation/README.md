@@ -34,7 +34,7 @@ InstancedValidationAll.RunBothBackends()
 无像素),套件因此一律钉在顶点流。**2026-07-31 复测不再复现**——新启动编辑器上
 buffer 路径正常,且以对照实验坐实像素来自实例 draw(关段渲染器像素消失、开回来复现,
 而叶子 `forceRenderingOff=true`,原生渲染器不参与)。全套 227 项在 buffer 后端一次
-全绿,双后端合计 **454/454**。
+全绿,双后端合计 **454/454**（自动挂载套件并入后 239 项/双后端 **478/478** 复验全绿）。
 
 **当初的触发条件未查明**,所以默认仍是顶点流(怪癖若复发,验证照样跑得起来);
 但正式验收请跑 `-ciBackend both`。
@@ -52,7 +52,7 @@ Unity -batchmode -projectPath . \
 有失败 1）。日志与报告首行是可 grep 的判定行：
 
 ```
-INSTANCED VALIDATION VERDICT: PASS pass=215 fail=0
+INSTANCED VALIDATION VERDICT: PASS pass=239 fail=0
 ```
 
 harness 注意事项（都踩过）：
@@ -84,6 +84,7 @@ harness 注意事项（都踩过）：
 | `InstancedM82Suite` | 19 | M8-2 mount 融合：陈旧/篡改/敌意计数拒挂、拼接、**像素闸门 diff=0**、mount 走槽、烘焙叶上的内容/颜色 tier、同帧自愈、失效阶梯与回退 |
 | `InstancedM84Suite` | 20 | M8-4 分层：可见性 g1-g16（叶/容器隐显零重编译、隐藏态跨重拼接存活、blob 外内容显示优雅失效）、内层变换 tier、t1-t4 六状态过场像素全等且零重编译 |
 | `InstancedM85Suite` | 14 | M8-5 无渲染器叶：defer 作用域、认领态零渲染器、**像素闸门 diff=0**、tier-2/颜色 tier 免渲染器、命中测试、释放物化、宽限期回退 |
+| `FqsAutoMountSuite` | 12 | CreateObject 自动挂载：开关/抑制路径、provider 缓存与锁定拒绝、defer 阈值（构造期整树无渲染器 + 拼接认领）、嵌套作用域安全、**像素对照 diff=0**、陈旧拒绝回退运行时走树。用真实 Basics 包（自动挂载只对包创建组件生效） |
 | `InstancedPerfInvariantSuite` | 12 | **性能不变量(确定性)**：各 tier 零重编译(槽/滚动/颜色/文本 slack/挂载移动/挂载内隐显)、三纹理合 1 段、段 GO 池化、idle Render 零分配、40 个 renderless 叶零渲染器、加叶不加段 |
 | `BinderReentrancyCheck` | 11 | MVVM Binder 重入（在 `Assets/Examples/Mvvm/`，由 `InstancedValidationAll` 一并调用） |
 
@@ -100,7 +101,7 @@ Unity -batchmode -projectPath . \
 ```
 
 判定行 `INSTANCED PERF VERDICT: PASS|FAIL pass=N fail=M`,退出码随结果。
-**必须单独一个 Unity 进程跑**,不能接在 227 项行为套件后面——那 227 项自己就会留下
+**必须单独一个 Unity 进程跑**,不能接在 239 项行为套件后面——那 239 项自己就会留下
 GC/驱动债,而 batchmode 冷启动天然就是"新鲜会话"。
 
 方法学(针对 M8-5 那次「45% 被读成 18%」的事故):

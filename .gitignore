@@ -42,3 +42,7 @@ Assets/StreamingAssets.meta
 # FQS baked blobs are generated accelerators (Tools/FairyGUI/Bake Packages), never sources
 Assets/Baked/
 Assets/Baked.meta
+# FQS 烘焙输出（M8 自动挂载后迁到 Resources 下，默认 provider 从这里加载）——
+# 生成物，随 Tools/FairyGUI/Bake Packages (FQS) 重出；生成的视图外观类反之要提交
+Assets/Resources/Baked/
+Assets/Resources/Baked.meta

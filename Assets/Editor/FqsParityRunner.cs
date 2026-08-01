@@ -46,6 +46,10 @@ namespace FairyGUIEditor
             var target = (Container)holder.displayObject;
             bool savedForce = InstancedUIStream.forceVertexPath;
             InstancedUIStream.forceVertexPath = true; //pixel-capable backend
+            //the runtime reference instances must stay on the pure runtime
+            //walk: an auto-mounted reference would compare a blob to itself
+            bool savedSuppress = FqsAutoMount.suppressed;
+            FqsAutoMount.suppressed = true;
             target.instancedRendering = true;
             Stage.inst.ForceUpdate();
 
@@ -78,6 +82,7 @@ namespace FairyGUIEditor
                 holder.Dispose();
                 Stage.inst.ForceUpdate();
                 InstancedUIStream.forceVertexPath = savedForce;
+                FqsAutoMount.suppressed = savedSuppress;
             }
 
             string verdict = $"FQS PARITY VERDICT: {(fail == 0 ? "PASS" : "FAIL")} (cases pass={pass} fail={fail} skip={skip})";

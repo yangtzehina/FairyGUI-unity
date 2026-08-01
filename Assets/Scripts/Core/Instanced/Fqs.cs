@@ -192,6 +192,25 @@ namespace FairyGUI
         static uint ReadU32(ReadOnlySpan<byte> s, ref int o) { uint v = MemoryMarshal.Read<uint>(s.Slice(o)); o += 4; return v; }
         static int ReadI32(ReadOnlySpan<byte> s, ref int o) { int v = MemoryMarshal.Read<int>(s.Slice(o)); o += 4; return v; }
 
+        /// <summary>
+        /// Reads the leaf count straight from a blob header, no full parse —
+        /// auto-mount sizes its defer-renderers decision BEFORE construction.
+        /// -1 when the bytes are not a current-version FQS blob.
+        /// </summary>
+        public static int PeekLeafCount(byte[] bytes)
+        {
+            if (bytes == null || bytes.Length < 44)
+                return -1;
+            var s = new ReadOnlySpan<byte>(bytes);
+            int o = 0;
+            if (ReadU32(s, ref o) != Magic || ReadU32(s, ref o) != FormatVersion)
+                return -1;
+            o += 12; //fuiHash + flags
+            o += 8;  //quad + seg counts
+            int n = ReadI32(s, ref o);
+            return n >= 0 && n <= (1 << 24) ? n : -1;
+        }
+
         /// <summary>FNV-1a 64 over a byte payload — the fui source-staleness gate.</summary>
         public static ulong Hash(byte[] bytes)
         {
@@ -308,6 +327,11 @@ namespace FairyGUI
             //frame it showed — the PRESENCE of the object means runtime state
             if (FindDynamicObject(root) is string dynWhere)
             { refuseReason = dynWhere + ": content is runtime state"; return null; }
+
+            //a bake is ground truth from the runtime walk: any mount in the
+            //subtree (auto-mount attaches at construction) would SPLICE its
+            //old quads into the new blob — strip them all before extracting
+            ClearMounts(root);
 
             //pin the compile backend: the vertex path coarsens clip regions past
             //its uniform-array limit, and a bake must not depend on the editor's
@@ -432,6 +456,15 @@ namespace FairyGUI
                 }
             }
             return null;
+        }
+
+        static void ClearMounts(Container c)
+        {
+            c._fqsMount = null;
+            int cnt = c.numChildren;
+            for (int i = 0; i < cnt; i++)
+                if (c.GetChildAt(i) is Container cc)
+                    ClearMounts(cc);
         }
 
         internal const ulong FnvSeed = 0xcbf29ce484222325UL;

@@ -7,7 +7,8 @@ namespace FairyGUIEditor
 {
     /// <summary>
     /// M8-1: bakes every exported component of every loaded UIPackage into an
-    /// FQS1 blob under Assets/Baked/&lt;package&gt;/. Runs the real stream compiler
+    /// FQS1 blob under Assets/Resources/Baked/&lt;package&gt;/ (the auto-mount
+    /// default provider loads exactly there). Runs the real stream compiler
     /// on a live instance, so it needs play mode with the packages loaded.
     /// Components outside the bakeable subset (text, barriers, masks) are
     /// refused per-item with the reason — never silently degraded.
@@ -36,59 +37,77 @@ namespace FairyGUIEditor
 
             int baked = 0, refused = 0, viewsWritten = 0;
             var pkgs = UIPackage.GetPackages();
-            foreach (var pkg in pkgs)
+            //bake instances must never auto-mount (a stale mount would splice
+            //its old quads into the new blob), and a re-bake invalidates every
+            //cached lookup on both sides of the pass
+            FqsAutoMount.ClearCache();
+            FqsAutoMount.suppressed = true;
+            try
             {
-                ulong hash = SourceHash(pkg);
-                if (hash == 0)
-                    Debug.LogWarning($"FQS: no source hash for package '{pkg.name}' (non-Resources load) — the staleness gate is DISABLED for its blobs.");
-                var usedNames = new System.Collections.Generic.HashSet<string>();
-                var usedClassNames = new System.Collections.Generic.HashSet<string>();
-                foreach (var item in pkg.GetItems())
+                foreach (var pkg in pkgs)
                 {
-                    if (item.type != PackageItemType.Component || !item.exported)
-                        continue;
-                    try
+                    ulong hash = SourceHash(pkg);
+                    if (hash == 0)
+                        Debug.LogWarning($"FQS: no source hash for package '{pkg.name}' (non-Resources load) — the staleness gate is DISABLED for its blobs.");
+                    var nameCount = new System.Collections.Generic.Dictionary<string, int>();
+                    foreach (var it in pkg.GetItems())
+                        if (it.type == PackageItemType.Component && it.exported)
+                            nameCount[it.name] = nameCount.TryGetValue(it.name, out int nc) ? nc + 1 : 1;
+                    var usedClassNames = new System.Collections.Generic.HashSet<string>();
+                    foreach (var item in pkg.GetItems())
                     {
-                    //create by ID: duplicate exported names resolve wrong by name
-                    GObject obj = UIPackage.CreateObjectFromURL("ui://" + pkg.id + item.id);
-                    var com = obj as GComponent;
-                    if (com == null)
-                    {
-                        obj?.Dispose();
-                        continue;
-                    }
-                    //parent under the UNSCALED stage: GRoot's UIContentScaler
-                    //scale would leak view-size-dependent float low bits into
-                    //the baked quads and break reproducible re-bakes
-                    Stage.inst.AddChild(com.displayObject);
-                    Stage.inst.ForceUpdate();
+                        if (item.type != PackageItemType.Component || !item.exported)
+                            continue;
+                        try
+                        {
+                        //create by ID: duplicate exported names resolve wrong by name
+                        GObject obj = UIPackage.CreateObjectFromURL("ui://" + pkg.id + item.id);
+                        var com = obj as GComponent;
+                        if (com == null)
+                        {
+                            obj?.Dispose();
+                            continue;
+                        }
+                        //parent under the UNSCALED stage: GRoot's UIContentScaler
+                        //scale would leak view-size-dependent float low bits into
+                        //the baked quads and break reproducible re-bakes
+                        Stage.inst.AddChild(com.displayObject);
+                        Stage.inst.ForceUpdate();
 
-                    //M8-3: view facade for EVERY exported component
-                    string src = FqsViewGenerator.GenerateSource(pkg, item, com, usedClassNames, out string clsName);
-                    if (FqsViewGenerator.WriteIfChanged($"Assets/BakedViews/{pkg.name}/{clsName}.cs", src))
-                        viewsWritten++;
+                        //M8-3: view facade for EVERY exported component
+                        string src = FqsViewGenerator.GenerateSource(pkg, item, com, usedClassNames, out string clsName);
+                        if (FqsViewGenerator.WriteIfChanged($"Assets/BakedViews/{pkg.name}/{clsName}.cs", src))
+                            viewsWritten++;
 
-                    byte[] blob = FqsBaker.Bake((Container)com.displayObject, hash, out string reason);
-                    com.Dispose();
-                    if (blob == null)
-                    {
-                        refused++;
-                        Debug.Log($"FQS refused {pkg.name}/{item.name}: {reason}");
-                        continue;
-                    }
-                    string dir = $"Assets/Baked/{pkg.name}";
-                    Directory.CreateDirectory(dir);
-                    string fileName = usedNames.Add(item.name) ? item.name : item.name + "_" + item.id;
-                    File.WriteAllBytes($"{dir}/{fileName}.fqs.bytes", blob);
-                    baked++;
-                    }
-                    catch (System.Exception e)
-                    {
-                        //one broken component must not abort the whole pass
-                        refused++;
-                        Debug.LogWarning($"FQS bake threw on {pkg.name}/{item.name}: {e.Message}");
+                        byte[] blob = FqsBaker.Bake((Container)com.displayObject, hash, out string reason);
+                        com.Dispose();
+                        if (blob == null)
+                        {
+                            refused++;
+                            Debug.Log($"FQS refused {pkg.name}/{item.name}: {reason}");
+                            continue;
+                        }
+                        string dir = $"Assets/Resources/Baked/{pkg.name}";
+                        Directory.CreateDirectory(dir);
+                        //duplicated exported names ALL take the id suffix — the
+                        //auto-mount default provider mirrors this naming exactly
+                        string fileName = nameCount[item.name] == 1 ? item.name : item.name + "_" + item.id;
+                        File.WriteAllBytes($"{dir}/{fileName}.fqs.bytes", blob);
+                        baked++;
+                        }
+                        catch (System.Exception e)
+                        {
+                            //one broken component must not abort the whole pass
+                            refused++;
+                            Debug.LogWarning($"FQS bake threw on {pkg.name}/{item.name}: {e.Message}");
+                        }
                     }
                 }
+            }
+            finally
+            {
+                FqsAutoMount.suppressed = false;
+                FqsAutoMount.ClearCache();
             }
             //two-phase codegen (charter §3): changed views must COMPILE before
             //anything can consume the types — mark pending, let the domain
@@ -124,10 +143,7 @@ namespace FairyGUIEditor
 
         static ulong SourceHash(UIPackage pkg)
         {
-            if (string.IsNullOrEmpty(pkg.assetPath))
-                return 0;
-            var ta = Resources.Load<TextAsset>(pkg.assetPath + "_fui");
-            return ta != null ? FqsBlob.Hash(ta.bytes) : 0;
+            return FqsAutoMount.PackageSourceHash(pkg);
         }
     }
 }
