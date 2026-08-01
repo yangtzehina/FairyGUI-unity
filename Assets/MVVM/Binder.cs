@@ -32,11 +32,47 @@ namespace FairyGUI.Mvvm
         {
             public ViewModel vm;
             public bool unbound;
+            //set while this group's entries are running. A nested Flush/ApplyAll
+            //must skip it: ApplyAll ignores dirty state by design, so an apply
+            //callback that calls ApplyAll would otherwise re-run ITSELF, for
+            //ever — a stack overflow, not a slow loop. (Found the hard way: the
+            //regression test written for the nested-call fix crashed the editor
+            //three times before this guard existed. The per-depth scratch list
+            //keeps the buffers from clobbering each other; only this stops the
+            //recursion.)
+            public bool applying;
             public readonly List<Entry> entries = new List<Entry>();
         }
 
         readonly List<Group> _groups = new List<Group>();
-        readonly List<Group> _flushScratch = new List<Group>();
+
+        //One scratch list PER NESTING DEPTH. A single shared one was enough for
+        //the V6 hazard (Bind/Unbind/Clear during apply) but not for an apply
+        //callback that calls Flush() or ApplyAll() again — a realistic "the
+        //sub-view was recreated, resync it" move. The nested call would clear
+        //and refill the one buffer, then empty it on exit, and the outer loop's
+        //next index read threw ArgumentOutOfRangeException with the outer
+        //group's dirty bits already consumed: the UI stays permanently out of
+        //sync even after the exception is caught. Stack discipline, allocation
+        //-free after the deepest nesting seen.
+        readonly List<List<Group>> _scratchPool = new List<List<Group>>();
+        int _depth;
+
+        List<Group> RentScratch()
+        {
+            if (_depth == _scratchPool.Count)
+                _scratchPool.Add(new List<Group>());
+            List<Group> scratch = _scratchPool[_depth++];
+            scratch.Clear();
+            scratch.AddRange(_groups);
+            return scratch;
+        }
+
+        void ReturnScratch(List<Group> scratch)
+        {
+            scratch.Clear();
+            _depth--;
+        }
 
         /// <summary>
         /// Binds a property (by its generated index constant) to an apply action that
@@ -93,35 +129,53 @@ namespace FairyGUI.Mvvm
         {
             //snapshot: Bind/Unbind/Clear inside apply callbacks must not derail
             //the iteration (review V6)
-            _flushScratch.Clear();
-            _flushScratch.AddRange(_groups);
-            int cnt = _flushScratch.Count;
-            for (int i = 0; i < cnt; i++)
+            List<Group> scratch = RentScratch();
+            try
             {
-                Group group = _flushScratch[i];
-                if (group.unbound)
-                    continue;
-                ulong mask = group.vm.dirtyMask;
-                if (mask == 0)
-                    continue;
-
-                //consume the snapshot up front: ANY write made during the applies
-                //below — another property or a re-mark of the one being applied
-                //(read-clamp-writeback) — lands after this clear and flushes next
-                //time (review V1). If an apply throws, the consumed bits are lost;
-                //apply callbacks are expected not to throw.
-                group.vm.ClearDirty(mask);
-
-                List<Entry> entries = group.entries;
-                int entryCount = entries.Count;
-                for (int j = 0; j < entryCount; j++)
+                int cnt = scratch.Count;
+                for (int i = 0; i < cnt; i++)
                 {
-                    Entry e = entries[j];
-                    if ((mask & (1UL << e.propertyIndex)) != 0)
-                        e.apply();
+                    Group group = scratch[i];
+                    if (group.unbound || group.applying)
+                        continue;
+                    ulong mask = group.vm.dirtyMask;
+                    if (mask == 0)
+                        continue;
+
+                    //consume the snapshot up front: ANY write made during the applies
+                    //below — another property or a re-mark of the one being applied
+                    //(read-clamp-writeback) — lands after this clear and flushes next
+                    //time (review V1). If an apply throws, the consumed bits are lost;
+                    //apply callbacks are expected not to throw.
+                    group.vm.ClearDirty(mask);
+
+                    List<Entry> entries = group.entries;
+                    int entryCount = entries.Count;
+                    group.applying = true;
+                    try
+                    {
+                    for (int j = 0; j < entryCount; j++)
+                    {
+                        //re-test per ENTRY, not just per group: an earlier entry of
+                        //this same group may have Unbound its own view model (a
+                        //"close me" handler) or Clear()ed the binder, and the later
+                        //entries would otherwise keep writing into a disposed view.
+                        //That is exactly what Unbind's doc promises and what the V6
+                        //tests missed by binding only one entry per view model.
+                        if (group.unbound)
+                            break;
+                        Entry e = entries[j];
+                        if ((mask & (1UL << e.propertyIndex)) != 0)
+                            e.apply();
+                    }
+                    }
+                    finally { group.applying = false; }
                 }
             }
-            _flushScratch.Clear();
+            finally
+            {
+                ReturnScratch(scratch);
+            }
         }
 
         /// <summary>
@@ -129,23 +183,37 @@ namespace FairyGUI.Mvvm
         /// </summary>
         public void ApplyAll()
         {
-            _flushScratch.Clear();
-            _flushScratch.AddRange(_groups);
-            int cnt = _flushScratch.Count;
-            for (int i = 0; i < cnt; i++)
+            List<Group> scratch = RentScratch();
+            try
             {
-                Group group = _flushScratch[i];
-                if (group.unbound)
-                    continue;
-                //consume the mask up front: everything is reapplied anyway, and
-                //writes made during the applies below must survive
-                group.vm.ClearDirty(group.vm.dirtyMask);
-                List<Entry> entries = group.entries;
-                int entryCount = entries.Count;
-                for (int j = 0; j < entryCount; j++)
-                    entries[j].apply();
+                int cnt = scratch.Count;
+                for (int i = 0; i < cnt; i++)
+                {
+                    Group group = scratch[i];
+                    if (group.unbound || group.applying)
+                        continue;
+                    //consume the mask up front: everything is reapplied anyway, and
+                    //writes made during the applies below must survive
+                    group.vm.ClearDirty(group.vm.dirtyMask);
+                    List<Entry> entries = group.entries;
+                    int entryCount = entries.Count;
+                    group.applying = true;
+                    try
+                    {
+                        for (int j = 0; j < entryCount; j++)
+                        {
+                            if (group.unbound) //see Flush
+                                break;
+                            entries[j].apply();
+                        }
+                    }
+                    finally { group.applying = false; }
+                }
             }
-            _flushScratch.Clear();
+            finally
+            {
+                ReturnScratch(scratch);
+            }
         }
 
         public void Clear()

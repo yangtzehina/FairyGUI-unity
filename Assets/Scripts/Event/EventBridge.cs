@@ -35,6 +35,14 @@ namespace FairyGUI
 
         public void AddCapture(EventCallback1 callback)
         {
+            //a null callback used to be harmless: the old storage was a multicast
+            //delegate, and Delegate.Combine(x, null) == x, so it never registered.
+            //With list storage an unguarded null lands at index 0, makes isEmpty
+            //(count-based) start lying, and then throws from CallInternal on the
+            //FIRST entry — which kills every real listener on that event type too,
+            //with a stack trace pointing nowhere near the registration site.
+            if (callback == null)
+                return;
             if (_captures == null)
                 _captures = new List<EventCallback1>(2);
             _captures.Remove(callback);
@@ -49,6 +57,8 @@ namespace FairyGUI
 
         public void Add(EventCallback1 callback)
         {
+            if (callback == null)
+                return; //see AddCapture
             if (_callbacks1 == null)
                 _callbacks1 = new List<EventCallback1>(2);
             _callbacks1.Remove(callback);
@@ -63,6 +73,8 @@ namespace FairyGUI
 
         public void Add(EventCallback0 callback)
         {
+            if (callback == null)
+                return; //see AddCapture
             if (_callbacks0 == null)
                 _callbacks0 = new List<EventCallback0>(2);
             _callbacks0.Remove(callback);

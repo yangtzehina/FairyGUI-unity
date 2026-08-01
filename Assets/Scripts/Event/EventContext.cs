@@ -88,6 +88,13 @@ namespace FairyGUI
 
         internal static void Return(EventContext value)
         {
+            //callChain is only cleared at the START of the next dispatch, so a
+            //context sitting in this STATIC pool would otherwise keep every
+            //EventBridge of the last broadcast alive — and with them the
+            //DisplayObjects of a subtree the caller has already torn down.
+            //Clearing on return costs nothing and bounds what the pool retains.
+            if (value.callChain != null)
+                value.callChain.Clear();
             pool.Push(value);
         }
 

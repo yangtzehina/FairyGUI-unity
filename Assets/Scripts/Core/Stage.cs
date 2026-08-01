@@ -1726,8 +1726,14 @@ namespace FairyGUI
                     }
                 }
 
-                Stage.inst.BubbleEvent("onTouchMove", evt, sHelperChain);
-                sHelperChain.Clear();
+                //try/finally: sHelperChain is STATIC and shared by all five
+                //TouchInfo slots, and BubbleEvent runs arbitrary user handlers.
+                //One handler that throws would otherwise leave stale bridges in
+                //it for ever, and every later touch would dispatch to them —
+                //objects from a torn-down subtree, in a frame that has nothing
+                //to do with them.
+                try { Stage.inst.BubbleEvent("onTouchMove", evt, sHelperChain); }
+                finally { sHelperChain.Clear(); }
             }
             else
                 Stage.inst.DispatchEvent("onTouchMove", evt);
@@ -1779,10 +1785,12 @@ namespace FairyGUI
                     if (e != null)
                         e.GetChainBridges("onTouchEnd", sHelperChain, false);
                 }
-                target.BubbleEvent("onTouchEnd", evt, sHelperChain);
-
-                touchMonitors.Clear();
-                sHelperChain.Clear();
+                try { target.BubbleEvent("onTouchEnd", evt, sHelperChain); }
+                finally
+                {
+                    touchMonitors.Clear();
+                    sHelperChain.Clear(); //see Move(): the chain is static
+                }
             }
             else
                 target.BubbleEvent("onTouchEnd", evt);
