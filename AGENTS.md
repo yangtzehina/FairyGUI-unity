@@ -6,7 +6,8 @@
 
 ## 项目是什么
 
-FairyGUI-unity 的现代化 fork（分支 `poc/gpu-instanced-ui`，名字已名不副实——它是完整功能线）：
+FairyGUI-unity 的现代化 fork（**开发在 `master` 上**，2026-08-01 起；此前的工作分支
+`poc/gpu-instanced-ui` 已整体收编，留作历史书签不再更新）：
 
 - **v4 quad 实例流**：子树编译成 GPU 常驻 quad 实例流，推送式脏协议（content/transform/
   visible/structure 四通道），transform 槽（内层移动 tier-1）、跨图集段键（≤4 纹理/段）、
