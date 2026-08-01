@@ -37,6 +37,14 @@ namespace FairyGUI
         public string name { get; private set; }
 
         /// <summary>
+        /// FNV-1a 64 over this package's descriptor bytes, computed on load for
+        /// EVERY load path. The M8 bake line stores it in each blob and refuses
+        /// to mount when it disagrees, which is what keeps a baked blob from
+        /// outliving an edit to its package. 0 only if the package never loaded.
+        /// </summary>
+        public ulong sourceHash { get; private set; }
+
+        /// <summary>
         /// Use this callback to provide resources to the package.
         /// </summary>
         /// <param name="name">Resource name without extension.</param>
@@ -666,6 +674,14 @@ namespace FairyGUI
 
         bool LoadPackage(ByteBuffer buffer, string assetNamePrefix)
         {
+            //M8 staleness gate: hash the descriptor HERE, the one point every
+            //AddPackage overload funnels through, so bundle/Addressables/raw-
+            //byte deployments get the same gate value as a Resources load.
+            //Computing it at the call site instead is how the gate ended up
+            //silently disabled for exactly the deployments that ship baked
+            //blobs separately from their packages.
+            sourceHash = FqsBlob.Hash(buffer.buffer, buffer.bufferOffset, buffer.length);
+
             if (buffer.ReadUint() != 0x46475549)
             {
                 if (Application.isPlaying)

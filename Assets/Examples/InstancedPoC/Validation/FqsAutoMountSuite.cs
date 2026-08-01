@@ -5,7 +5,7 @@ using FairyGUI;
 using UnityEngine;
 
 /// <summary>
-/// Auto-mount suite (M8 follow-on, 20 checks). FqsAutoMount turns the manual
+/// Auto-mount suite (M8 follow-on, 25 checks). FqsAutoMount turns the manual
 /// two-line bake integration into a per-project switch: package-created
 /// components look up blobs through a pluggable provider at construction, ARM
 /// them on the container, and the enclosing stream realizes the mount at
@@ -34,6 +34,14 @@ public static class FqsAutoMountSuite
 
     static bool Spliced(FqsMount m) { return m != null && sSpliced != null && (bool)sSpliced.GetValue(m); }
     static bool Armed(GComponent c) { return sPending != null && sPending.GetValue((Container)c.displayObject) != null; }
+
+    /// <summary>Stands in for a bundle/Addressables loader: the package arrives
+    /// as raw descriptor bytes plus a resolver for its assets.</summary>
+    static object BundleShapedLoader(string name, string extension, System.Type type, out DestroyMethod dm)
+    {
+        dm = DestroyMethod.Unload;
+        return Resources.Load(name, type);
+    }
 
     static void CollectLeaves(Container c, List<NGraphics> outList)
     {
@@ -290,9 +298,20 @@ public static class FqsAutoMountSuite
             inst4.Dispose();
             env.Step(1);
 
-            //--- c14: the staleness gate is live -----------------------------
-            env.Check("c14.blob hash equals the recomputed package source hash",
-                FqsBlob.Read(blob).fuiHash == FqsAutoMount.PackageSourceHash(pkg));
+            //--- c14: the mount side recomputes the same combination ---------
+            //Callers pass only the OWNING package's hash; Mount must fold in
+            //the referenced packages itself and arrive at the stored value.
+            //(c23 checks the bake side of the same identity.)
+            var gateProbe = Create();
+            Debug.unityLogger.logEnabled = false;
+            bool gateAccepts = FqsMount.Mount(gateProbe, blob, pkg.sourceHash);
+            FqsMount.Unmount((Container)gateProbe.displayObject);
+            bool gateRejects = !FqsMount.Mount(gateProbe, blob, pkg.sourceHash + 1);
+            Debug.unityLogger.logEnabled = prevLog;
+            gateProbe.Dispose();
+            env.Step(1);
+            env.Check("c14.Mount recomputes the combined gate value from the owner hash alone",
+                gateAccepts && gateRejects);
 
             //--- c15: REGRESSION — identity is the item id, not the name -----
             //Two components with the same name (one exported, one not) must
@@ -366,6 +385,95 @@ public static class FqsAutoMountSuite
             env.Step(1);
             env.Check("c19.a blob with no source hash is refused whenever a hash is expected",
                 FqsAutoMount.requireSourceHash && refusedUnverifiable);
+
+            //--- c21/c22: the gate covers NON-Resources load paths -----------
+            //The hash used to be computed by reaching into Resources from the
+            //bake line, so AssetBundle/Addressables/raw-byte deployments —
+            //exactly the ones that ship blobs apart from their packages — got
+            //0 and had the staleness gate silently waived. UIPackage now hashes
+            //its descriptor inside LoadPackage, the one point every AddPackage
+            //overload funnels through. Proven end to end on the raw-byte path
+            //(the shape a bundle deployment uses) with a package not otherwise
+            //in play, then removed again.
+            //capture the descriptor FIRST: assetPath is set only by the
+            //path-based overload, so on a bundle/raw-byte load this Resources
+            //lookup returns null — a check must FAIL there, not throw and take
+            //the other 21 results down with it
+            TextAsset ownDesc = string.IsNullOrEmpty(pkg.assetPath)
+                ? null : Resources.Load<TextAsset>(pkg.assetPath + "_fui");
+            env.Check($"c21.the package's hash equals FNV over its own descriptor (desc={(ownDesc != null)})",
+                pkg.sourceHash != 0 && ownDesc != null
+                && pkg.sourceHash == FqsBlob.Hash(ownDesc.bytes));
+
+            //c22 is the property the whole gate rests on in production: the
+            //editor bakes against a Resources load, the player loads the same
+            //published package from a bundle, and the two MUST hash alike or
+            //the gate refuses every valid blob on device. Comparing the raw-
+            //byte path against FNV of those same bytes would be near-tautology;
+            //this loads one real package BOTH ways and compares.
+            var bagDesc = Resources.Load<TextAsset>("UI/Bag_fui");
+            ulong viaResources = 0, viaRawBytes = 0;
+            if (bagDesc != null && UIPackage.GetByName("Bag") == null)
+            {
+                UIPackage viaRes = UIPackage.AddPackage("UI/Bag");
+                if (viaRes != null)
+                {
+                    viaResources = viaRes.sourceHash;
+                    UIPackage.RemovePackage(viaRes.id);
+                }
+                UIPackage viaRaw = UIPackage.AddPackage(bagDesc.bytes, "UI/Bag", BundleShapedLoader);
+                if (viaRaw != null)
+                {
+                    viaRawBytes = viaRaw.sourceHash;
+                    UIPackage.RemovePackage(viaRaw.id);
+                }
+            }
+            env.Check($"c22.the same package hashes alike loaded from Resources vs raw bytes (bundle shape) ({viaResources:X16})",
+                viaResources != 0 && viaResources == viaRawBytes
+                && viaResources != pkg.sourceHash);
+
+            //--- c23/c24: the gate spans DEPENDENCY packages too --------------
+            //A blob flattens the whole subtree, so a component from another
+            //package contributes baked geometry and atlas UVs. Gating on the
+            //owning package alone would let a dependency be re-published (atlas
+            //repacks) while the frozen quads keep sampling the old rects.
+            var bd = FqsBlob.Read(blob);
+            ulong recombined = FqsBlob.CombineWithReferences(srcHash, bd.texRefs, FqsBlob.LivePackageHash);
+            bool refsPackages = false;
+            foreach (var tr in bd.texRefs)
+                if (tr.kind == FqsBlob.TexRefKind.Package) refsPackages = true;
+            env.Check($"c23.the stored gate value folds in every referenced package (refs={refsPackages})",
+                refsPackages && bd.fuiHash == recombined && bd.fuiHash != srcHash);
+
+            //sensitivity: the SAME texRefs hash differently once a referenced
+            //package's hash changes — which is what re-publishing it does
+            var fakeRefs = new FqsBlob.TexRef[]
+            {
+                new FqsBlob.TexRef { kind = FqsBlob.TexRefKind.Package, url = pkg.id + "/x" },
+                new FqsBlob.TexRef { kind = FqsBlob.TexRefKind.Package, url = "OTHERPKG/y" },
+            };
+            ulong withDep = FqsBlob.CombineWithReferences(srcHash, fakeRefs,
+                id => id == "OTHERPKG" ? 0xDEADBEEFUL : FqsBlob.LivePackageHash(id));
+            ulong depRepublished = FqsBlob.CombineWithReferences(srcHash, fakeRefs,
+                id => id == "OTHERPKG" ? 0xFEEDFACEUL : FqsBlob.LivePackageHash(id));
+            ulong depMissing = FqsBlob.CombineWithReferences(srcHash, fakeRefs, FqsBlob.LivePackageHash);
+            env.Check("c24.re-publishing (or losing) a referenced package moves the gate value",
+                withDep != depRepublished && withDep != depMissing && depRepublished != depMissing
+                && FqsBlob.CombineWithReferences(0, fakeRefs, FqsBlob.LivePackageHash) == 0);
+
+            //--- c25: REGRESSION — a stale FORMAT refuses as a format problem -
+            //The combined gate value changed what fuiHash MEANS, so a blob from
+            //before it would fail the hash compare and be reported as "stale
+            //content" — sending a team hunting for a re-export that never
+            //happened. FormatVersion carries the change instead.
+            var v1 = (byte[])blob.Clone();
+            v1[4] = 1; v1[5] = 0; v1[6] = 0; v1[7] = 0; //formatVersion := 1
+            string formatMsg = null;
+            try { FqsBlob.Read(v1); }
+            catch (System.IO.InvalidDataException e) { formatMsg = e.Message; }
+            env.Check($"c25.a previous-format blob refuses by VERSION, not as staleness ({formatMsg})",
+                FqsBlob.FormatVersion >= 2 && formatMsg != null
+                && formatMsg.Contains("format") && FqsBlob.PeekLeafCount(v1) == -1);
 
             //--- c20: REGRESSION — Bake restores the caller's mounts ---------
             //Bake detaches mounts so it never freezes an accelerator into a new

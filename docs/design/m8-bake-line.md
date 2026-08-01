@@ -172,6 +172,66 @@ FqsAutoMount.enabled = true;   // 启动时一行；此后 CreateObject 全自�
 （装填/兑现时序、删除内容不留幽灵、id 身份、非导出不查、分支键、档位门、无哈希拒绝、
 烘焙恢复调用方 mount），并入全量门禁。
 
+## 4.7 源哈希门覆盖全部加载路径（2026-08-01）
+
+过期检测（§2「blob 永远是可丢弃加速缓存，语义真源是 .fui」的执行机构）原来由烘焙线
+自己算：`Resources.Load<TextAsset>(pkg.assetPath + "_fui")`。这对**非 Resources 加载的包
+一律得 0**——AssetBundle、Addressables、字节数组，恰恰是把 blob 与包分开发布、因而最
+需要门禁的部署形态。自动挂载把 `requireSourceHash` 默认打开后，这些工程会直接一个 blob
+都挂不上；关掉它则门禁静默失效。两条都不可接受。
+
+**修法：哈希算在包自己身上。** `UIPackage.sourceHash` 在 `LoadPackage(ByteBuffer, string)`
+开头算出——那是五个 `AddPackage` 重载（AssetBundle ×3、Resources/路径、自定义 loadFunc、
+字节数组同步/异步）**唯一的汇合点**。哈希取 ByteBuffer 的 `[bufferOffset, +length)` 窗口
+（`ByteBuffer` 为此新增 `bufferOffset` 访问器，因为底层数组可以更大且共享），
+`FqsBlob.Hash` 相应增加带范围的重载。
+
+要点：
+
+- **哈希标识的是描述符内容，不是投递方式**——同一个发布出来的包，编辑器走 Resources 烘焙、
+  运行时走 bundle 加载，两侧必须得到同一个值，门禁才不会误拒。
+- **`UIPackage.sourceHash` 的数值与旧算法逐位一致**（c21 断言的就是这个）——单看这一半，
+  既有 blob 不会失效。**但下一节的组合哈希改变了 blob 里存的值，所以本次改动整体是要重烘的**，
+  见下方迁移说明。
+- `FqsAutoMount.PackageSourceHash` 退化成 `pkg.sourceHash` 的转发，烘焙菜单同源；
+  原来那份按包 id 记忆化的哈希缓存一并删除（缓存本身也是上一轮审查里跨包重载的缺陷源）。
+- `requireSourceHash` 保留为**兜底**：哈希为 0 现在只意味着包没加载完，不再是常态。
+
+### 门禁还要跨过依赖包（同批修，来自审查）
+
+单有「包自己的描述符哈希」仍然不够：**blob 是整棵子树的扁平 quad 表**，里面可以含别的包
+来的组件——`FqsBaker.ResolveTex` 扫描全部已加载包，发出的 texRef 就是 `别的包id/图集项id`。
+于是：Main 引用 Common/Btn，烘 Main 得到 Btn 的 quad + Common 的图集 UV；美术只重发
+Common（图集重排、Btn 的 rect 变了），Main 的描述符逐字节未变 → 门禁放行 → 冻结的 quad
+仍按旧 rect 采样**新图集** → 那个按钮画出隔壁精灵的像素，无警告、结构也没变所以 pathHash
+照样绑上。讽刺的是 Common 自己的 blob 会被正确拒绝，Main 的却不会。
+
+修法：blob 里存的 `fuiHash` 改为**组合值**——owner 的 sourceHash 链上每个被引用包的
+sourceHash（包 id 去重后按 ordinal 排序，两侧同一个 `FqsBlob.CombineWithReferences`）。
+挂载方仍只传 owner 哈希，由 `FqsMount.Mount` 自己按 blob 的 texRef 表重算组合值再比对。
+被引用包未加载则贡献 0，与烘焙时不符 → 拒绝（失败方向安全）；`ownerHash == 0`
+（程序化烘焙、NoSourceHash）保持 0，语义不变。
+
+**残留（明写，免得被当成已覆盖）**：只贡献**无纹理叶**（纯 Shape 组件）的依赖包不会留下
+Package texRef，因而不在这条链里。有纹理的依赖——绝大多数——都覆盖到了，且由于链上取的是
+依赖包的**描述符**哈希，依赖包里纯几何的改动（挪个 4px）同样会移动门禁值。
+
+### 迁移：本次必须重烘（`FormatVersion` 1 → 2）
+
+组合哈希改的是 `fuiHash` 这个字段的**含义**（原来＝owner 包哈希，现在＝owner 链上被引用包），
+布局一字未动。但含义改变同样是格式演进——若不升版本，v1 老 blob 会以「**源哈希不符（陈旧
+blob）**」被拒，把格式问题伪装成内容过期，团队会去追一次根本没发生过的重新导出。实测本仓库
+自己的产物即如此：旧值 `668D00CB44B58CDD`，新值 `2AF8B0EAECBF80FD`，永远不可能相等。
+
+因此按 §2「演进走 formatVersion」把 `FqsBlob.FormatVersion` 升到 **2**：老 blob 直接以
+`FQS: format 1 != 2` 被明确拒绝，自说明、可排查。**升级运行时后必须重跑
+`Tools/FairyGUI/Bake Packages (FQS)`**；blob 是 gitignore 的生成物，重烘无代价。
+
+验收：`FqsAutoMountSuite` c21/c22/c23/c24 + c14——c21 钉住「包哈希 == 其描述符的 FNV」，
+c22 真正走一遍字节数组加载（bundle 形态）并断言**与 Resources 加载同值**（这才是生产
+环境成立的前提，非同义反复），c23 断言存储值确实是组合而非裸 owner 哈希，c24 断言被引用
+包的哈希一变（重发或丢失）门禁值就变，c14 断言 mount 侧只拿 owner 哈希也能重算出同一组合值。
+
 ## 5. 风险与对策
 
 - **双实现漂移**（§15 已直说）：烘焙器复刻 FairyGUI 布局语义（relations/pivot/旋转/group）——

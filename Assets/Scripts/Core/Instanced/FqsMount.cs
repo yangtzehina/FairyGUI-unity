@@ -66,7 +66,12 @@ namespace FairyGUI
 
             if (expectedFuiHash != 0)
             {
-                if ((d.flags & FqsBlob.BlobFlags.NoSourceHash) != 0 || d.fuiHash != expectedFuiHash)
+                //the caller supplies the OWNING package's hash; the stored value
+                //also folds in every package this blob froze geometry from, so
+                //re-publishing a dependency moves the gate too
+                ulong expectedCombined = FqsBlob.CombineWithReferences(
+                    expectedFuiHash, d.texRefs, FqsBlob.LivePackageHash);
+                if ((d.flags & FqsBlob.BlobFlags.NoSourceHash) != 0 || d.fuiHash != expectedCombined)
                 {
                     Warn("FQS mount refused: source hash mismatch (stale blob) — subtree stays on the runtime walk.");
                     return false;

@@ -22,7 +22,17 @@ namespace FairyGUI
         //the format is little-endian only (every Unity target is LE; a BE
         //reader fails the magic check, which is the intended rejection)
         public const uint Magic = 0x31535146; //'FQS1' little-endian
-        public const uint FormatVersion = 1;
+
+        /// <summary>
+        /// 2 (2026-08-01): fuiHash stopped meaning "the owning package's source
+        /// hash" and started meaning "that hash CHAINED WITH every referenced
+        /// package's" (see CombineWithReferences). Nothing about the LAYOUT
+        /// moved, but a field's meaning did — and a v1 blob read by a v2 runtime
+        /// would fail the gate as if its CONTENT were stale, sending teams
+        /// hunting for a re-export that never happened. The version bump turns
+        /// that into an explicit, self-describing refusal: re-bake.
+        /// </summary>
+        public const uint FormatVersion = 2;
 
         [Flags]
         public enum BlobFlags : uint
@@ -230,8 +240,92 @@ namespace FairyGUI
         /// <summary>FNV-1a 64 over a byte payload — the fui source-staleness gate.</summary>
         public static ulong Hash(byte[] bytes)
         {
+            return Hash(bytes, 0, bytes != null ? bytes.Length : 0);
+        }
+
+        /// <summary>
+        /// The value stored in a blob's fuiHash: the owning package's source
+        /// hash CHAINED WITH the source hash of every other package the blob
+        /// references.
+        ///
+        /// A blob is a flattened quad list of the whole subtree, so a component
+        /// from another package contributes baked geometry and atlas UVs to it,
+        /// and ResolveTex records that package in the texRef table. Gating on
+        /// the owning package alone therefore misses the case where a
+        /// DEPENDENCY is re-published: its atlas repacks, the mount resolves
+        /// the new texture live, and the frozen quads keep sampling the old
+        /// rects — a button rendering a neighbouring sprite's pixels, with the
+        /// gate satisfied and nothing warning.
+        ///
+        /// Deterministic on both sides: distinct package ids, ordinal-sorted.
+        /// A referenced package that is not loaded contributes 0, which cannot
+        /// match a bake taken while it was loaded — refusing is the safe
+        /// direction. ownerHash == 0 (a programmatic bake, NoSourceHash) stays
+        /// 0: there is no expectation to combine with.
+        ///
+        /// Residual, stated so it is not mistaken for covered: a dependency
+        /// that contributes only UNTEXTURED leaves (all-shape components) leaves
+        /// no Package texRef and so stays outside this chain.
+        /// </summary>
+        public static ulong CombineWithReferences(ulong ownerHash, TexRef[] refs, Func<string, ulong> pkgHash)
+        {
+            if (ownerHash == 0 || refs == null)
+                return ownerHash;
+            //HashSet, not List.Contains: this runs inside FqsMount.Mount BEFORE
+            //any structural validation, and Read admits a texRef count the blob
+            //itself chooses — a linear-scan dedupe would turn a corrupt or
+            //hostile blob into an O(n^2) main-thread hang instead of the cheap
+            //refusal it is supposed to be
+            HashSet<string> seen = null;
+            List<string> ids = null;
+            for (int i = 0; i < refs.Length; i++)
+            {
+                if (refs[i].kind != TexRefKind.Package)
+                    continue;
+                int slash = refs[i].url.IndexOf('/');
+                if (slash <= 0)
+                    continue;
+                string pid = refs[i].url.Substring(0, slash);
+                if (seen == null)
+                {
+                    seen = new HashSet<string>(StringComparer.Ordinal);
+                    ids = new List<string>();
+                }
+                if (seen.Add(pid))
+                    ids.Add(pid);
+            }
+            if (ids == null)
+                return ownerHash;
+            ids.Sort(StringComparer.Ordinal);
+            ulong h = ownerHash;
+            for (int i = 0; i < ids.Count; i++)
+            {
+                ulong ph = pkgHash(ids[i]);
+                for (int b = 0; b < 8; b++)
+                    h = (h ^ ((ph >> (b * 8)) & 0xFF)) * 0x100000001b3UL;
+            }
+            return h;
+        }
+
+        /// <summary>Package hash lookup used by CombineWithReferences: 0 when the package is gone.</summary>
+        public static ulong LivePackageHash(string pkgId)
+        {
+            UIPackage p = UIPackage.GetById(pkgId);
+            return p != null ? p.sourceHash : 0UL;
+        }
+
+        /// <summary>
+        /// FNV-1a 64 over a byte RANGE. UIPackage hashes its descriptor through
+        /// this so every load path (Resources, AssetBundle, raw bytes) produces
+        /// the same gate value for the same descriptor content.
+        /// </summary>
+        public static ulong Hash(byte[] bytes, int offset, int count)
+        {
             ulong h = 0xcbf29ce484222325UL;
-            for (int i = 0; i < bytes.Length; i++)
+            if (bytes == null)
+                return h;
+            int end = offset + count;
+            for (int i = offset; i < end; i++)
                 h = (h ^ bytes[i]) * 0x100000001b3UL;
             return h;
         }
@@ -463,6 +557,9 @@ namespace FairyGUI
                     };
                 }
                 d.texRefs = texRefs.ToArray();
+                //gate on every package this blob froze geometry from, not just
+                //the one that owns the component (see CombineWithReferences)
+                d.fuiHash = FqsBlob.CombineWithReferences(d.fuiHash, d.texRefs, FqsBlob.LivePackageHash);
 
                 refuseReason = null;
                 return FqsBlob.Write(d);

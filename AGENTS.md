@@ -42,7 +42,7 @@ FairyGUI-unity 的现代化 fork（分支 `poc/gpu-instanced-ui`，名字已名�
 2. `Tools/FairyGUI/Run FQS Parity` —— 常设对照门禁（枚举不抽样 + 像素/几何双层 + 篡改阶梯），
    结果写 `Temp/FqsParityResults.txt`，判定行 `FQS PARITY VERDICT: PASS|FAIL`。
 3. `FairyGUI/Instanced UI Streams` —— 流诊断面板（段/quads/槽/认领/重编译计数）。
-4. `Tools/FairyGUI/Run Validation Suites` —— 跑仓库内的 247 项行为/像素/不变量套件
+4. `Tools/FairyGUI/Run Validation Suites` —— 跑仓库内的 252 项行为/像素/不变量套件
    （需已在 Play 模式；无头形态见下）。
 5. `Tools/FairyGUI/Run Perf Gates` —— 墙钟比值门（需新鲜 Play 会话）。
 
@@ -65,7 +65,7 @@ CI 类入口（非菜单）：
   绿了才提交，提交信息里写验收数字。
 - **后端覆盖：两条都要跑**。历史上本机编辑器的 buffer 路径（顶点级 StructuredBuffer）
   静默不出图，所以套件默认 `forceVertexPath = true`。**2026-07-31 复测该怪癖不再复现**
-  （对照实验确认像素来自实例 draw），buffer 后端 227/227 全绿，双后端 454/454（自动挂载并入后 247 项，双后端 494/494）。
+  （对照实验确认像素来自实例 draw），buffer 后端 227/227 全绿，双后端 454/454（自动挂载并入后 252 项，双后端 504/504）。
   默认仍留顶点流（怪癖若复发验证照跑），但**验收应跑 `-ciBackend both`**：两条后端是
   同一语义的两套 shader + 上传实现，只跑一条等于覆盖了一半。切换用
   `InstancedValidationEnv.useVertexBackend` / `InstancedValidationAll.RunOn(bool)` /
@@ -82,8 +82,8 @@ CI 类入口（非菜单）：
 - **像素探针坐标**：`(逻辑坐标) × GRoot.contentScaleFactor` → 屏幕像素，y 翻转
   `RH-1-y`。验证前确认演示场景已打开（见踩坑第 3 条）。
 - **验证套件已全部固化进仓库**：`Assets/Examples/InstancedPoC/Validation/`
-  （17 套 247 项：M1 重组器 17、M3 裁剪栈 10、M7 SDF 17、M4 场景 19、批1-4
-  14/8/19/10/12、批5 曲线文本 10、M8-1/2/4/5 15/19/20/14、自动挂载 20、
+  （17 套 252 项：M1 重组器 17、M3 裁剪栈 10、M7 SDF 17、M4 场景 19、批1-4
+  14/8/19/10/12、批5 曲线文本 10、M8-1/2/4/5 15/19/20/14、自动挂载 25、
   性能不变量 12、MVVM 11）。
   跑法、harness 约定与坑见该目录 `README.md`；一条
   `eval "return InstancedValidationAll.Run();"` 跑完全部。
@@ -139,6 +139,11 @@ CI 类入口（非菜单）：
     一律先写进文件再 `eval "$(cat file)"`（heredoc 用 `<<'EOF'` 引号形式禁展开）。
 12. **python 批量编辑仓库文件**：断言锚点 + 末尾统一写盘（失败零半态）；锚点必须
     对着**当前**文件内容取（批次迭代后旧锚点常失效，见 batch3/M8 多次返工）。
+    **改文件前先看它的字节编码**：上游带来的文件（如 `Assets/Scripts/UI/UIPackage.cs`）
+    是 BOM + CRLF，用 `open(p,'w',encoding='utf-8')` 写回会把整份文件换成无 BOM + LF——
+    16 行的改动会显示成 3400 行全文件 diff，既没法审阅也污染历史。这类文件一律
+    `open(p,'rb')` 读、按字节替换（换行写成 `\r\n`）、`open(p,'wb')` 写。
+    改完 `git diff --stat` 看行数是否与改动量相称。
 13. **`Temp/` 在编辑器退出时被清空**：菜单跑法（FqsParityRunner）无碍，但
     **batchmode 把结果写进 `Temp/` 会在 CI 读到之前消失**——无头结果一律写
     `Logs/`（已 gitignore）。实测过：退出码与判定行都对，文件却不存在。

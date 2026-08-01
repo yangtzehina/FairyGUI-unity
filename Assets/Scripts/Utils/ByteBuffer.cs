@@ -68,6 +68,16 @@ namespace FairyGUI.Utils
         }
 
         /// <summary>
+        /// Start of this buffer's window inside <see cref="buffer"/>. Together
+        /// with <see cref="length"/> it delimits the bytes this buffer actually
+        /// owns — the backing array can be larger and shared.
+        /// </summary>
+        public int bufferOffset
+        {
+            get { return _offset; }
+        }
+
+        /// <summary>
         /// 
         /// </summary>
         public bool bytesAvailable

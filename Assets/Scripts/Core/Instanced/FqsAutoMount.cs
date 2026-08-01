@@ -41,13 +41,17 @@ namespace FairyGUI
         public static int deferLeafThreshold = 10;
 
         /// <summary>
-        /// Refuse blobs that cannot be checked against their source package
-        /// (PackageSourceHash == 0 — a non-Resources load, i.e. every bundle
-        /// and Addressables deployment). Default ON: the staleness gate is the
-        /// bake line's whole safety net, and silently waiving it for exactly
-        /// the deployments that ship blobs separately from packages is how
-        /// stale UI reaches players. Projects that carry their own source
-        /// hash (or accept the risk) set this false deliberately.
+        /// Refuse blobs whose package reports no source hash (sourceHash == 0).
+        ///
+        /// Scope, stated precisely because the previous wording overpromised:
+        /// this governs the AUTO-MOUNT path only. UIPackage now hashes its
+        /// descriptor at the top of LoadPackage on every load path, so a
+        /// registered package effectively always has a hash and this branch is
+        /// a backstop rather than a live guard. It does NOT reach
+        /// FqsMount.Mount called directly with the default expectedFuiHash of
+        /// 0 — that overload deliberately means "no expectation" and is what
+        /// programmatic bakes and the parity runner use. Manual integrations
+        /// must pass pkg.sourceHash themselves to be gated.
         /// </summary>
         public static bool requireSourceHash = true;
 
@@ -97,8 +101,6 @@ namespace FairyGUI
 
         sealed class PackageCache
         {
-            internal bool hashComputed;
-            internal ulong hash;
             internal bool warnedGateOff;
             internal readonly Dictionary<string, Entry> items = new Dictionary<string, Entry>();
         }
@@ -109,8 +111,9 @@ namespace FairyGUI
         /// </summary>
         public static void ClearCache()
         {
-            //ConditionalWeakTable has no Clear on this runtime: swap contents
-            //by walking the packages we can still see, then drop stragglers
+            //ConditionalWeakTable has no Clear on this runtime; entries for
+            //packages already gone die with them, so dropping the live ones
+            //is enough
             foreach (var pkg in UIPackage.GetPackages())
                 _byPackage.Remove(pkg);
         }
@@ -126,25 +129,15 @@ namespace FairyGUI
         }
 
         /// <summary>
-        /// FNV-1a over the package's _fui descriptor loaded via Resources —
-        /// the same hash the bake menu embeds, recomputed from the CURRENT
-        /// package so stale blobs refuse. 0 when unavailable (non-Resources
-        /// package); see requireSourceHash for what that means.
+        /// The gate value for a package: FNV-1a over the descriptor bytes it
+        /// actually loaded from. UIPackage computes this on load for EVERY
+        /// path (Resources, AssetBundle, raw bytes), so a bundle deployment is
+        /// gated exactly like an editor Resources load — which it was not when
+        /// this reached into Resources itself and got 0 for everything else.
         /// </summary>
         public static ulong PackageSourceHash(UIPackage pkg)
         {
-            var c = CacheOf(pkg);
-            if (c.hashComputed)
-                return c.hash;
-            c.hash = 0;
-            if (!string.IsNullOrEmpty(pkg.assetPath))
-            {
-                var ta = Resources.Load<TextAsset>(pkg.assetPath + "_fui");
-                if (ta != null)
-                    c.hash = FqsBlob.Hash(ta.bytes);
-            }
-            c.hashComputed = true;
-            return c.hash;
+            return pkg.sourceHash;
         }
 
         /// <summary>
@@ -243,7 +236,7 @@ namespace FairyGUI
                 if (!cache.warnedGateOff)
                 {
                     cache.warnedGateOff = true;
-                    Debug.LogWarning($"FQS auto-mount: no source hash for package '{pkg.name}' (non-Resources load)"
+                    Debug.LogWarning($"FQS auto-mount: package '{pkg.name}' reports no source hash"
                         + (requireSourceHash
                             ? " — blobs REFUSED. Set FqsAutoMount.requireSourceHash = false to accept unverifiable blobs."
                             : " — the staleness gate is DISABLED for its blobs (requireSourceHash = false)."));

@@ -47,9 +47,9 @@ namespace FairyGUIEditor
             {
                 foreach (var pkg in pkgs)
                 {
-                    ulong hash = SourceHash(pkg);
+                    ulong hash = pkg.sourceHash;
                     if (hash == 0)
-                        Debug.LogWarning($"FQS: no source hash for package '{pkg.name}' (non-Resources load) — the staleness gate is DISABLED for its blobs.");
+                        Debug.LogWarning($"FQS: package '{pkg.name}' reports no source hash — the staleness gate would be DISABLED for its blobs.");
                     var usedClassNames = new System.Collections.Generic.HashSet<string>();
                     foreach (var item in pkg.GetItems())
                     {
@@ -145,9 +145,5 @@ namespace FairyGUIEditor
             Debug.Log($"FQS views settled: {n} generated types compiled and loadable.");
         }
 
-        static ulong SourceHash(UIPackage pkg)
-        {
-            return FqsAutoMount.PackageSourceHash(pkg);
-        }
     }
 }
