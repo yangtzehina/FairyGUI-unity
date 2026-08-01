@@ -210,6 +210,40 @@ public static class InstancedPerfInvariantSuite
             }
             env.Check($"p12.30 leaf content rewrites cost {stream.extractCount - e0} recompiles",
                 stream.extractCount == e0);
+
+            //--- p13: the vertex-path upload width is what we say it is -----
+            //The vertex backend pays 4 vertices per quad, so this number IS
+            //its bandwidth. Asserted rather than commented because a widened
+            //field costs 4 bytes per vertex silently — the pixel gates would
+            //stay green while every WebGL frame got heavier.
+            int declared = InstancedUIStream.vertexUploadStride;
+            int fromLayout = InstancedUIStream.vertexUploadLayoutSize;
+            int marshalled = InstancedUIStream.vertexUploadStructSize;
+            //measured is what Unity actually allocated for the segment mesh —
+            //the other three are all restatements of our own declaration, so
+            //without it p13 could only catch us disagreeing with ourselves
+            int measured = stream.measuredVertexStride;
+            env.Check($"p13.vertex upload is {declared}B/vertex = {declared * 4}B/quad"
+                + $" (layout={fromLayout} struct={marshalled} mesh={measured}, was 104/416)",
+                declared == 72 && fromLayout == declared && marshalled == declared
+                && (declared & 3) == 0
+                && (measured == declared || !InstancedValidationEnv.useVertexBackend));
+
+            //--- p14: the packed glyph index survives the byte round trip ---
+            //Under FlagCurveGlyph those four UNorm8 bytes are not radii, they
+            //are a glyph index the shader rebuilds as b0 + b1*256 + b2*65536.
+            //Checked here on the C# side because the packing is ours; the
+            //shader's half of it is exact only because of its floor(x*255+0.5).
+            bool glyphRoundTrip = true;
+            var one = new QuadInstance[1];
+            foreach (uint idx in new uint[] { 0u, 1u, 255u, 256u, 4095u, 65535u })
+            {
+                one[0] = new QuadInstance { padding = idx, flags = QuadInstance.FlagCurveGlyph };
+                uint back = InstancedUIStream.PackedRadiiForDiagnostics(in one[0]);
+                if (back != idx) glyphRoundTrip = false;
+            }
+            env.Check("p14.curve-glyph index survives the packed-byte round trip (0..65535)",
+                glyphRoundTrip);
         }
         finally
         {

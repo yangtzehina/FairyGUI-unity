@@ -425,6 +425,71 @@ namespace FairyGUI
         /// <summary>Diagnostics/CI probe: compiled leaf ranges.</summary>
         public int leafCount { get { return _leaves.Count; } }
 
+        //--- vertex-backend upload width (diagnostics) ----------------------
+        //The vertex path pays 4 vertices per quad, so this width IS its upload
+        //bandwidth. Exposed because QuadVertex is internal and a validation
+        //gate in another assembly has to be able to pin the number: a field
+        //widened by 4 bytes costs every WebGL frame silently while the pixel
+        //gates stay green.
+        public static int vertexUploadStride { get { return QuadVertex.Stride; } }
+
+        public static int vertexUploadStructSize
+        {
+            get { return System.Runtime.InteropServices.Marshal.SizeOf<QuadVertex>(); }
+        }
+
+        /// <summary>
+        /// The stride Unity ACTUALLY allocated for this stream's segment
+        /// meshes, read back from the mesh. The constants above are what we
+        /// declared; this is what the GPU got. -1 when no segment mesh exists
+        /// (buffer backend, or nothing compiled yet).
+        /// </summary>
+        public int measuredVertexStride
+        {
+            get
+            {
+                for (int i = 0; i < _segments.Count; i++)
+                {
+                    Mesh m = _segments[i].mesh;
+                    if (m != null && m.vertexCount > 0)
+                        return m.GetVertexBufferStride(0);
+                }
+                return -1;
+            }
+        }
+
+        /// <summary>
+        /// Round-trips one instance through the vertex writer and rebuilds the
+        /// four packed bytes the way the shader does. Exposed for validation:
+        /// under FlagCurveGlyph those bytes are a glyph index, not radii, so
+        /// the packing has to be lossless in a way plain radii would forgive.
+        /// </summary>
+        public static uint PackedRadiiForDiagnostics(in QuadInstance q)
+        {
+            var v = new QuadVertex[4];
+            QuadVertex.WriteQuad(v, 0, in q);
+            return v[0].radBL | ((uint)v[0].radBR << 8)
+                 | ((uint)v[0].radTL << 16) | ((uint)v[0].radTR << 24);
+        }
+
+        /// <summary>Bytes the declared attribute layout actually describes —
+        /// must agree with both of the above or the GPU reads shifted fields.</summary>
+        public static int vertexUploadLayoutSize
+        {
+            get
+            {
+                int n = 0;
+                var layout = QuadVertex.Layout;
+                for (int i = 0; i < layout.Length; i++)
+                {
+                    var f = layout[i].format;
+                    n += layout[i].dimension * (f == VertexAttributeFormat.Float32 ? 4
+                        : f == VertexAttributeFormat.Float16 || f == VertexAttributeFormat.UNorm16 ? 2 : 1);
+                }
+                return n;
+            }
+        }
+
         /// <summary>Diagnostics/CI probe (M8-6 parity): copies the compiled quad
         /// stream out for comparison harnesses.</summary>
         public void CopyQuadsForDiagnostics(List<QuadInstance> into)

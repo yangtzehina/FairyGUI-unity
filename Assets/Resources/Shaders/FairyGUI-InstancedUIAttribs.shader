@@ -58,7 +58,8 @@ Shader "FairyGUI/InstancedUIAttribs"
                 float4 rect : TEXCOORD0;   //xy = min corner (container local), zw = size
                 float4 uvA : TEXCOORD1;    //xy = uv at corner (0,0), zw = uv at corner (1,0)
                 float4 uvB : TEXCOORD2;    //xy = uv at corner (0,1), zw = uv at corner (1,1)
-                float4 misc : TEXCOORD3;   //x = transformIndex, y = clipIndex, z = flags, w = border width px
+                float3 misc : TEXCOORD3;   //x = transformIndex, y = clipIndex, z = flags
+                //UNorm8: the four 0-255 bytes as 0..1 — see the floor() below
                 float4 sdfRadii : TEXCOORD4; //corner radii px: BL BR TL TR (M7)
             };
 
@@ -102,15 +103,18 @@ Shader "FairyGUI/InstancedUIAttribs"
                 o.clipRect = _ClipRects[clipIndex];
                 o.clipSoft = _ClipSofts[clipIndex];
                 o.sdfPos = float4(c * a.rect.zw, a.rect.zw * 0.5);
-                o.sdfRadii = a.sdfRadii;
+                //UNorm8 hands these back as k/255; recover the exact byte. The
+                //rounding is not cosmetic: mode 3 weights the top byte by
+                //16777216, where a raw k/255*255 round-trip's ~1e-5 becomes a
+                //~167-glyph miss.
+                float4 rad = floor(a.sdfRadii * 255.0 + 0.5);
+                o.sdfRadii = rad;
                 float mode = (flags & 2) != 0 ? 1.0 : ((flags & 4) != 0 ? 2.0
                     : ((flags & 8) != 0 ? 3.0 : 0.0));
-                //mode 3 (curve glyph): sdfRadii carries the glyph index bytes
-                //(QuadVertex decodes instance padding into four 0-255 floats)
+                //mode 3 (curve glyph): those same four bytes ARE the glyph index
                 float mwx = mode == 3.0
-                    ? a.sdfRadii.x + a.sdfRadii.y * 256.0 + a.sdfRadii.z * 65536.0
-                        + a.sdfRadii.w * 16777216.0
-                    : a.misc.w;
+                    ? rad.x + rad.y * 256.0 + rad.z * 65536.0 + rad.w * 16777216.0
+                    : (float)((flags >> 8) & 255);
                 o.sdfMW = float3(mwx, mode, (flags >> 16) & 3);
                 o.color = a.color;
                 return o;
