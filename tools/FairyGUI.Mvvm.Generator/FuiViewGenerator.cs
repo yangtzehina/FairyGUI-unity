@@ -39,6 +39,21 @@ namespace FairyGUI.Mvvm.Generator
             "Failed to parse '{0}': {1}", "FairyGUI.Mvvm",
             DiagnosticSeverity.Error, true);
 
+        static readonly DiagnosticDescriptor ChildSkipped = new DiagnosticDescriptor(
+            "FGM205", "Child not representable",
+            "Component '{0}': child '{1}' gets no typed field ({2}); rename it in the FairyGUI editor to bind it", "FairyGUI.Mvvm",
+            DiagnosticSeverity.Warning, true);
+
+        static readonly DiagnosticDescriptor Unsupported = new DiagnosticDescriptor(
+            "FGM206", "Unsupported declaration",
+            "Class '{0}' is nested or generic; [FuiView] supports top-level non-generic classes", "FairyGUI.Mvvm",
+            DiagnosticSeverity.Error, true);
+
+        static readonly DiagnosticDescriptor DuplicateView = new DiagnosticDescriptor(
+            "FGM207", "Duplicate [FuiView]",
+            "[FuiView] appears more than once for '{0}'; only the first is generated", "FairyGUI.Mvvm",
+            DiagnosticSeverity.Warning, true);
+
         static readonly ConcurrentDictionary<string, (DateTime stamp, FuiPackage pkg, string error)> sCache
             = new ConcurrentDictionary<string, (DateTime, FuiPackage, string)>();
 
@@ -61,21 +76,66 @@ namespace FairyGUI.Mvvm.Generator
                             packageName = args.Length > 0 ? args[0].Value as string : null,
                             componentName = args.Length > 1 ? args[1].Value as string : null,
                             isPartial = partial,
+                            isNestedOrGeneric = type.ContainingType != null || type.IsGenericType,
                         };
                     })
                 .Collect();
 
+            //the pipeline value must CHANGE when the .fui's CONTENT changes, or
+            //Roslyn serves the whole downstream from cache and the generated view
+            //goes stale while the package moves on — the mtime cache in
+            //LoadPackage never even runs, because Emit itself is never re-invoked.
+            //Path alone (the original value here) has exactly that failure.
             var files = context.AdditionalTextsProvider
                 .Where(static t => t.Path.EndsWith(".bytes", StringComparison.OrdinalIgnoreCase)
                                 || t.Path.EndsWith(".fui", StringComparison.OrdinalIgnoreCase))
-                .Select(static (t, _) => t.Path)
+                .Select(static (t, ct) => (path: t.Path, version: ContentVersion(t, ct)))
                 .Collect();
 
             context.RegisterSourceOutput(views.Combine(files), static (spc, pair) =>
             {
+                //dedup: [FuiView] on two partial parts of one class yields the
+                //symbol twice, and a duplicate AddSource hint name would throw and
+                //abort the entire generator (every view in the compilation)
+                var seen = new HashSet<string>();
                 foreach (var view in pair.Left)
+                {
+                    string key = view.ns + "." + view.className;
+                    if (!seen.Add(key))
+                    {
+                        spc.ReportDiagnostic(Diagnostic.Create(DuplicateView, Location.None, key));
+                        continue;
+                    }
                     Emit(spc, view, pair.Right);
+                }
             });
+        }
+
+        /// <summary>
+        /// A value that moves when the file's bytes move. NOT AdditionalText.
+        /// GetText: the real csc host DIAGNOSES CS2015 on a binary additional
+        /// file the moment GetText runs — a test host decodes it quietly, which
+        /// is how that call survived to a Unity compile before failing. .fui IS
+        /// binary, so hash the bytes directly (the generator already reads this
+        /// same file in LoadPackage; deliberate, per the csproj note on RS1035).
+        /// </summary>
+        static string ContentVersion(AdditionalText t, System.Threading.CancellationToken ct)
+        {
+            try
+            {
+                byte[] bytes = File.ReadAllBytes(t.Path);
+                ulong h = 0xcbf29ce484222325UL;
+                for (int i = 0; i < bytes.Length; i++)
+                    h = (h ^ bytes[i]) * 0x100000001b3UL;
+                return bytes.Length + ":" + h.ToString("x16");
+            }
+            catch
+            {
+                //unreadable now != unreadable before: fold in time so the state
+                //is not sticky across the moment the file becomes readable
+                var fi = new FileInfo(t.Path);
+                return fi.Exists ? "unreadable:" + fi.Length + ":" + fi.LastWriteTimeUtc.Ticks : "missing";
+            }
         }
 
         sealed class ViewInfo
@@ -85,6 +145,7 @@ namespace FairyGUI.Mvvm.Generator
             public string packageName;
             public string componentName;
             public bool isPartial;
+            public bool isNestedOrGeneric;
         }
 
         static FuiPackage LoadPackage(SourceProductionContext spc, string path)
@@ -117,10 +178,18 @@ namespace FairyGUI.Mvvm.Generator
             }
         }
 
-        static void Emit(SourceProductionContext spc, ViewInfo view, IReadOnlyList<string> files)
+        static void Emit(SourceProductionContext spc, ViewInfo view, IReadOnlyList<(string path, string version)> files)
         {
             if (view.packageName == null || view.componentName == null)
                 return;
+
+            if (view.isNestedOrGeneric)
+            {
+                //emitting would place the partial at NAMESPACE scope — a new type
+                //that shadows nothing and completes nothing (same guard as FGM005)
+                spc.ReportDiagnostic(Diagnostic.Create(Unsupported, Location.None, view.className));
+                return;
+            }
 
             if (!view.isPartial)
             {
@@ -129,7 +198,7 @@ namespace FairyGUI.Mvvm.Generator
             }
 
             FuiPackage pkg = null;
-            foreach (var path in files)
+            foreach (var (path, _) in files)
             {
                 var p = LoadPackage(spc, path);
                 if (p != null && p.name == view.packageName)
@@ -141,7 +210,7 @@ namespace FairyGUI.Mvvm.Generator
 
             if (pkg == null)
             {
-                string found = string.Join(", ", files.Select(Path.GetFileName));
+                string found = string.Join(", ", files.Select(f => Path.GetFileName(f.path)));
                 spc.ReportDiagnostic(Diagnostic.Create(PackageNotFound, Location.None, view.packageName,
                     found.Length > 0 ? found : "none"));
                 return;
@@ -172,8 +241,23 @@ namespace FairyGUI.Mvvm.Generator
             var fields = new List<(string name, string type)>();
             foreach (var child in comp.children)
             {
-                if (child.name == null || !IsValidIdentifier(child.name) || !used.Add(child.name))
+                //silently dropping a child makes 'the field does not exist' look
+                //like 'the child does not exist' — report each skip and why (this
+                //repo's own Basics package has two children this fires on today)
+                if (child.name == null || child.name.Length == 0)
+                    continue; //unnamed children are unaddressable by design
+                if (!IsValidIdentifier(child.name))
+                {
+                    spc.ReportDiagnostic(Diagnostic.Create(ChildSkipped, Location.None,
+                        comp.name, child.name, "not a valid C# identifier"));
                     continue;
+                }
+                if (!used.Add(child.name))
+                {
+                    spc.ReportDiagnostic(Diagnostic.Create(ChildSkipped, Location.None,
+                        comp.name, child.name, "name collides with a generated member or an earlier child"));
+                    continue;
+                }
                 fields.Add((child.name, ResolveClass(pkg, child)));
             }
 
@@ -182,9 +266,12 @@ namespace FairyGUI.Mvvm.Generator
 
             sb.Append(ind).AppendLine("    public void Bind(global::FairyGUI.GComponent component)");
             sb.Append(ind).AppendLine("    {");
-            sb.Append(ind).AppendLine("        root = component;");
+            //'this.' on every field write: a child named 'component' generates a
+            //field that the PARAMETER would otherwise shadow, silently mis-binding
+            //every assignment after it (the simple name binds to the parameter)
+            sb.Append(ind).AppendLine("        this.root = component;");
             foreach (var f in fields)
-                sb.Append(ind).Append("        ").Append(f.name).Append(" = (global::FairyGUI.").Append(f.type)
+                sb.Append(ind).Append("        this.").Append(f.name).Append(" = (global::FairyGUI.").Append(f.type)
                   .Append(")component.GetChild(\"").Append(f.name).AppendLine("\");");
             sb.Append(ind).AppendLine("    }");
 

@@ -92,11 +92,20 @@ namespace FairyGUI.Mvvm.Generator
             //indices continue after observable fields declared in base classes
             int baseCount = CountBaseObservables(type);
 
-            //stable order: declaration order within the class
+            //stable order: file path FIRST, then declaration order within the
+            //file. Raw span offsets compare positions from DIFFERENT files when a
+            //partial class spans several — whitespace edits in one file then
+            //reshuffle the interleaving, and with it every generated
+            //{Name}Property constant. Path then span is deterministic and only
+            //moves when a field actually moves (or a file is renamed).
             fields.Sort((a, b) =>
             {
                 var la = a.Locations.FirstOrDefault();
                 var lb = b.Locations.FirstOrDefault();
+                int byFile = string.CompareOrdinal(
+                    la?.SourceTree?.FilePath ?? "", lb?.SourceTree?.FilePath ?? "");
+                if (byFile != 0)
+                    return byFile;
                 return (la?.SourceSpan.Start ?? 0).CompareTo(lb?.SourceSpan.Start ?? 0);
             });
 
@@ -123,7 +132,11 @@ namespace FairyGUI.Mvvm.Generator
             {
                 var field = fields[i];
                 string propName = DerivePropertyName(field.Name);
-                if (propName == null || propName == field.Name)
+                //validity too, not just distinctness: '_2ndSlot' derives '2ndSlot',
+                //which emits a file that does not PARSE — one bad field name and
+                //the whole generated partial (every property) fails to compile
+                if (propName == null || propName == field.Name
+                    || !SyntaxFacts.IsValidIdentifier(propName))
                 {
                     spc.ReportDiagnostic(Diagnostic.Create(BadFieldName,
                         field.Locations.FirstOrDefault() ?? location, field.Name));

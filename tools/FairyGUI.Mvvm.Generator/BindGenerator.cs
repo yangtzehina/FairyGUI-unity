@@ -43,6 +43,16 @@ namespace FairyGUI.Mvvm.Generator
             "[Bind] method '{0}' must be void and parameterless", "FairyGUI.Mvvm",
             DiagnosticSeverity.Error, true);
 
+        static readonly DiagnosticDescriptor Unsupported = new DiagnosticDescriptor(
+            "FGM105", "Unsupported declaration",
+            "Class '{0}' is nested or generic; [BindContext] supports top-level non-generic classes", "FairyGUI.Mvvm",
+            DiagnosticSeverity.Error, true);
+
+        static readonly DiagnosticDescriptor Inaccessible = new DiagnosticDescriptor(
+            "FGM106", "Inaccessible [Bind] member",
+            "[Bind] member '{0}' on base class {1} is private; generated code in {2} cannot reach it", "FairyGUI.Mvvm",
+            DiagnosticSeverity.Error, true);
+
         public void Initialize(IncrementalGeneratorInitializationContext context)
         {
             var classes = context.SyntaxProvider
@@ -62,6 +72,15 @@ namespace FairyGUI.Mvvm.Generator
         static void Emit(SourceProductionContext spc, INamedTypeSymbol type)
         {
             var location = type.Locations.FirstOrDefault() ?? Location.None;
+
+            //same guard ObservableGenerator has always had (FGM005): without it the
+            //partial below is emitted at NAMESPACE scope and silently declares a
+            //brand-new type instead of completing the user's nested/generic one
+            if (type.ContainingType != null || type.IsGenericType)
+            {
+                spc.ReportDiagnostic(Diagnostic.Create(Unsupported, location, type.Name));
+                return;
+            }
 
             if (!type.DeclaringSyntaxReferences.All(r =>
                     r.GetSyntax() is ClassDeclarationSyntax c && c.Modifiers.Any(SyntaxKind.PartialKeyword)))
@@ -98,12 +117,40 @@ namespace FairyGUI.Mvvm.Generator
             string vmFull = vmType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
             var lines = new List<string>();
 
-            foreach (var member in type.GetMembers())
+            //GetMembers() returns only members DECLARED on this type, so [Bind]
+            //members on a base view class used to be silently skipped — BindTo
+            //compiled clean with an empty body and the UI never updated. Walk the
+            //base chain, derived-most first; a redeclared name shadows the base one.
+            var members = new List<ISymbol>();
+            var seenNames = new HashSet<string>();
+            for (var t = type; t != null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
+            {
+                foreach (var member in t.GetMembers())
+                {
+                    if (!seenNames.Add(member.Name))
+                        continue;
+                    members.Add(member);
+                }
+            }
+
+            foreach (var member in members)
             {
                 var bindAttr = member.GetAttributes().FirstOrDefault(a =>
                     a.AttributeClass?.ToDisplayString() == "FairyGUI.Mvvm.BindAttribute");
                 if (bindAttr == null || bindAttr.ConstructorArguments.Length == 0)
                     continue;
+
+                //a private base member is invisible to the generated code, which
+                //lives in the DERIVED class — report rather than silently skip
+                //(silent skipping is exactly the defect this rewrite removes)
+                if (!SymbolEqualityComparer.Default.Equals(member.ContainingType, type)
+                    && member.DeclaredAccessibility == Accessibility.Private)
+                {
+                    spc.ReportDiagnostic(Diagnostic.Create(Inaccessible,
+                        member.Locations.FirstOrDefault() ?? location,
+                        member.Name, member.ContainingType.Name, type.Name));
+                    continue;
+                }
 
                 string propName = bindAttr.ConstructorArguments[0].Value as string;
                 if (propName == null)
@@ -183,15 +230,23 @@ namespace FairyGUI.Mvvm.Generator
             bool isString = propType.SpecialType == SpecialType.System_String;
             bool isBool = propType.SpecialType == SpecialType.System_Boolean;
 
+            //bool -> .visible is checked FIRST: every G* control derives from
+            //GObject, so behind the per-control branches' early returns the rule
+            //was unreachable for exactly the field types those branches match
+            //(a bool bound to a GTextField/GProgressBar/GSlider always FGM103'd,
+            //despite the class doc promising otherwise)
+            if (isBool)
+                return DerivesFrom(field.Type, "FairyGUI.GObject")
+                    ? $"{field.Name}.visible = {get}"
+                    : null;
+
             if (DerivesFrom(field.Type, "FairyGUI.GTextField") || DerivesFrom(field.Type, "FairyGUI.TextField"))
             {
                 if (integral)
                     return $"global::FairyGUI.TextFieldExtensions.SetIntText({field.Name}, {get})";
                 if (isString)
                     return $"{field.Name}.text = {get}";
-                if (!isBool)
-                    return $"{field.Name}.text = {get}.ToString()";
-                return null;
+                return $"{field.Name}.text = {get}.ToString()";
             }
 
             if (DerivesFrom(field.Type, "FairyGUI.GProgressBar") || DerivesFrom(field.Type, "FairyGUI.GSlider"))
@@ -200,9 +255,6 @@ namespace FairyGUI.Mvvm.Generator
                     return $"{field.Name}.value = {get}";
                 return null;
             }
-
-            if (isBool && DerivesFrom(field.Type, "FairyGUI.GObject"))
-                return $"{field.Name}.visible = {get}";
 
             return null;
         }

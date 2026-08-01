@@ -49,13 +49,20 @@ namespace FairyGUI.Mvvm
             int count = items.Count;
             int rendered = 0;
 
+            //Bookkeeping AFTER render, in both branches: recording the new key
+            //first would mark the row clean even when render throws (a GLoader
+            //url resolving to a missing item, say) — and a clean row is never
+            //retried, so the stale content stayed until the key changed again.
+            //With render-first, a throw leaves the old key in place and the next
+            //Apply simply tries again.
             if (_keys.Count != count)
             {
                 _keys.Clear();
                 for (int i = 0; i < count; i++)
                 {
-                    _keys.Add(_keySelector(items[i]));
+                    TKey key = _keySelector(items[i]);
                     render(i);
+                    _keys.Add(key);
                     rendered++;
                 }
                 return rendered;
@@ -67,8 +74,8 @@ namespace FairyGUI.Mvvm
                 TKey key = _keySelector(items[i]);
                 if (!comparer.Equals(key, _keys[i]))
                 {
-                    _keys[i] = key;
                     render(i);
+                    _keys[i] = key;
                     rendered++;
                 }
             }

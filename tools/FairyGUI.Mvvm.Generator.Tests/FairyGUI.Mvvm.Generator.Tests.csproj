@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <!-- the generator targets Roslyn 4.3.0 (Unity 2022.3's ceiling); driving it
+         from a newer Microsoft.CodeAnalysis is fine — binding redirects up -->
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.9.2" />
+    <ProjectReference Include="../FairyGUI.Mvvm.Generator/FairyGUI.Mvvm.Generator.csproj" />
+  </ItemGroup>
+</Project>

@@ -14,12 +14,12 @@
 | V6 | Flush 按缓存的 cnt 索引遍历 _groups：apply 回调中 Unbind（RemoveAt）导致跳组或 ArgumentOutOfRange；Clear 同理 | **已修（第 1 批）**：Flush/ApplyAll 迭代快照列表，Unbind/Clear 对组打 unbound 墓碑；回调中 Bind 的新组从下一次 Flush 生效（经核实 Bind 半边本就是良性的） |
 | U1 | BaseFont.textRebuildFlag 触发 Stage 整树双遍 Update，字体图集重建帧全树成本 ×2（上游原有行为，被认领叶放大浪费） | **已结（2026-08-01，实测推翻原描述）**：双遍走树只占重建帧的约 12%，"成本 ×2"不成立；真正的开销是图集重建本身。详见下方 §U1 |
 | E1 | 事件层——原定义已丢失，2026-08-01 重审后**重新定义为三条**（E1a/E1b/E1c，见 §E1） | **已修**：三条全部修复，E1a 是我们自己引入的回归 |
-| S2 / S5 | Source Generator——原定义已丢失，重审后**重新定义为九条**（见 §S2/S5） | **未修**：定义已明确，独立成批；生成器不进 Unity 构建，不阻塞运行时 |
+| S2 / S5 | Source Generator——原定义已丢失，重审后**重新定义为九条**（见 §S2/S5） | **已修（第二批）**：九条全修，常驻行为门 `tools/FairyGUI.Mvvm.Generator.Tests`（18 项，对修前代码 16 红、修后 18 绿双向验证） |
 | V7 | Flush/ApplyAll 共用一个 `_flushScratch` 快照字段：apply 回调里再调 Flush/ApplyAll 会清空外层正在索引的缓冲 → `ArgumentOutOfRangeException`，且外层组的脏位已被消费，UI 永久失步 | **已修（本批）**：改为按嵌套深度租用快照 + **组级 `applying` 闸**（见 §V7 的事故记） |
 | V8 | 墓碑只在组**之间**生效：`Unbind`/`Clear` 拦不住正在 apply 的那一组，同组后续 entry 仍会写进已 Dispose 的视图——正是 `Unbind` 文档承诺的语义 | **已修（本批）**：entry 循环内逐条重测 `unbound` |
-| V9 | `BindList` 按值捕获集合实例，属性重新赋值后永远渲染旧集合 | 未修，定义见 §待办 |
-| V10 | 虚拟列表 itemRenderer 用 GList 的陈旧索引空间去索引活模型（GList 自行滚动重渲染，binder 只在 Flush 时对齐） | 未修，定义见 §待办 |
-| V11 | `KeyedListDiffer` 先记新 key 再 render：render 抛异常会让该行被永久标记为干净 | 未修，定义见 §待办 |
+| V9 | `BindList` 按值捕获集合实例，属性重新赋值后永远渲染旧集合 | **已修（第二批）**：主 API 改为取值委托 `Func<IReadOnlyList<T>>`；实例重载保留、降级为"仅就地变更"并借道委托版实现 |
+| V10 | 虚拟列表 itemRenderer 用 GList 的陈旧索引空间去索引活模型 | **已修（第二批）**：renderer 内对**当前**集合做范围检查，越界静默跳过（下一次 Flush 会重对齐重渲染）；实例重载借道委托版后同样受益 |
+| V11 | `KeyedListDiffer` 先记新 key 再 render：render 抛异常会让该行被永久标记为干净 | **已修（第二批）**：两个分支都改为 render 先、记账后——抛异常则旧 key 保留，下一次 Apply 自动重试 |
 
 ## E1 重新定义（2026-08-01 重审，三条全部已修）
 
@@ -85,7 +85,19 @@ apply 时，嵌套的 Flush/ApplyAll 跳过它。这既终止递归，又保留�
 | 8 | Observable | `DerivePropertyName` 不校验标识符合法性：`_2ndSlot` 生成语法非法的文件（FuiView 有 `IsValidIdentifier`，它没有） |
 | 9 | Observable | 属性索引按 `SourceSpan` 原始偏移排序、不区分文件：partial ViewModel 拆多文件时，**无关空白改动会让 `public const int XxxProperty` 的值变化** |
 
-不阻塞运行时（生成器不进 Unity 构建），建议独立成批修，第 1/2/4/5 优先。
+九条已全部修复（2026-08-01 第二批）。验收是常驻行为门
+`tools/FairyGUI.Mvvm.Generator.Tests`（`dotnet run` 驱动 CSharpGeneratorDriver 跑**真实
+生成器** + 真实 Basics 包字节，18 项，判定行 `RESULT pass=N fail=N`）：每条缺陷一项，
+并以**双向验证**立门——修后代码 18 绿，把三个生成器换回修前版本实测 **16 红**
+（含审计描述过的 FGM103 误报与 CS8785 生成器整体中止原样复现）。
+
+两条实现注记：
+
+- **`AdditionalText.GetText()` 对二进制文件在真 csc 宿主里直接报 CS2015**——测试宿主
+  静默解码，所以这个调用在 18/18 全绿之后才在 Unity 编译里炸出来。.fui 是二进制，
+  内容版本改为自读字节算 FNV。测试宿主与真宿主的行为差异，只有真编译一遍才能发现。
+- g4（内容过期）必须用**同一个 driver 增量重跑**来测：新 driver 每次全量执行，测不到
+  缓存缺陷；且诱变字节要打在**文件头**——打中间可能落在解析器根本不读的段里。
 
 ## 待办：本次重审新发现、尚未修的三条
 
