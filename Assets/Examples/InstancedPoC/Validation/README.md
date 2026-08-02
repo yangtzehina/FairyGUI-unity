@@ -94,6 +94,13 @@ harness 注意事项（都踩过）：
 断言成精确计数(18× 之所以是 18×,根因是重编译 120→0,不是某个 µs 数)。计数是确定的,
 所以它和行为套件跑在一起,永远不会 flake。
 
+**GPU 成本测量工具**（不是门，不进 ALL）：`CurveGpuCostBench` —— 曲线文本 fragment
+成本实测，`FairyGUIEditor.CurveGpuCostCI.BuildMac()` 出 macOS player 后
+`Build/MacCurveGpu.app/Contents/MacOS/* -curvegpu -curvegpuOut <path>` 跑，判定行
+`CURVEGPU VERDICT`（门槛=测量有效性，数字本身是交付物）。编辑器里
+`CurveGpuCostBench.StartInEditor()` 可调通 harness（编辑器 Metal 也报 GPU 时间，
+仅作趋势）。方法学注意：60fps 封顶 + 跨轮取最小（AGENTS 坑位 23）。
+
 **第二层是墙钟比值门**(`InstancedPerfRatioBench`,入口 `FairyGUIEditor.InstancedPerfCI`)。
 
 ```

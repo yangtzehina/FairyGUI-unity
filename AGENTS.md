@@ -193,6 +193,16 @@ CI 类入口（非菜单）：
     把"故障已修复"的构建读成仍然 FAIL——两轮数字一模一样才发现）。A/B 对照一律
     `tabs_create` 开新标签页读。
 
+22. **BuildPipeline 的目标必须等于活动目标**：不一致时报
+    `Error building player because script class layout is incompatible`（不点名类）。
+    根因：编辑器程序集带着**活动目标**的平台 defines（如 UNITY_WEBGL），与 player 侧
+    布局不一致。先 `EditorUserBuildSettings.SwitchActiveBuildTarget(...)` 等切换完成再构建。
+23. **无风扇机器上的 GPU 基准必须设帧率上限**：uncapped 连续满载会让 M4 热降频，
+    同内容相位按执行顺序单调变慢（实测 2.5→10.8ms），而超短基线相位测不出降频
+    （压不住时钟）——ABAB 比值法救不了单侧漂移。60fps 封顶控占空比，汇总跨轮取
+    **最小值**（降频严格单向）。GPU 时间用 `FrameTimingManager`
+    （需 `enableFrameTimingStats`，编辑器 Metal 也能读到，可先在编辑器调通 harness）。
+
 ## 文档地图
 
 | 文档 | 内容 |

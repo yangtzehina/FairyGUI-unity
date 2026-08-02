@@ -590,6 +590,42 @@ badPx 均 0.000%，SDF 圆角矩形认领为 1 个解析 quad、badPx 0.074%（�
 验收：`CurveEffectsSuite` 8 项（含双向注入证明）；全量门禁双后端 **564/564**。
 CurveBaseFont 剩余限制：单字体文件、效果宽度钳于带高、假粗体不加宽 advance、点匹配复合字形。
 
+
+## 8a：Metal/TBDR 曲线文本 fragment 成本实测（2026-08-02）
+
+批5 遗留的「fragment 成本实测」拆成两半：8a 在本机 M4 上测 Metal（Apple Silicon 与
+iPhone 的 GPU 同家族、同为 TBDR，可信回答 Apple 移动阵营），8b 留给 Android/Vulkan
+真机（Mali/Adreno 驱动行为不可外推，等设备）。
+
+工具：`CurveGpuCostBench`（运行时逐帧状态机，`-curvegpu` 自启）+
+`FairyGUIEditor.CurveGpuCostCI.BuildMac()`。GPU 时间来自 `FrameTimingManager`
+（构建入口开 `enableFrameTimingStats`）；ABAB 相位交错、每相位 60 帧取中位、
+跨轮取**最小值**。
+
+**实测（M4，Metal，1280×800，整屏文本墙）：**
+
+| 相位 | GPU | 对平面 quad 基线 |
+|---|---|---|
+| 平面 quad 墙（等覆盖基线） | 0.138ms | 1× |
+| CJK 正文墙（size 28，~均值 11 曲线/带） | **1.191ms** | 8.6× |
+| 龘 墙（size 48，单带 58 曲线最坏例） | **3.295ms** | 23.8× |
+| 描边墙（批5b band±1 距离扫描） | 1.766ms | **1.48× 于正文**（远低于理论 3× 循环上限） |
+
+**判读**：逐 fragment 贵 8.6-24 倍，但绝对量完全可负担——整屏纯文本 1.2ms、整屏
+最坏字形 3.3ms（M4 @1280×800）。iPhone 级（约 M4 的 1/2）折算整屏正文 ~2-3ms、
+真实 UI 的文本占屏远小于整屏 → 正文常态 <1ms。**Apple/TBDR 半边结论：可负担，
+批5b 效果的增量也温和（1.48×）**。8b 只需复核 Android 驱动的循环/texelFetch 质量。
+
+**两条方法教训（已进 AGENTS）：**
+
+1. **无风扇机器上不设帧率上限的基准会自己烤自己**：首轮 uncapped，重相位把 GPU
+   热到降频，同内容 text 相位按执行顺序从 2.5ms 漂到 10.8ms，而 0.07ms 的 quads
+   基线全程纹丝不动（太短压不住时钟）——比值法救不了这种单侧漂移。修正：60fps
+   封顶控占空比 + 跨轮取最小值（降频严格单向，最少降频的轮最接近硬件真值）。
+2. **BuildPipeline 构建目标 ≠ 活动目标时报 "script class layout is incompatible"**：
+   活动目标还停在 WebGL（M6 那轮切的），编辑器程序集带 UNITY_WEBGL defines 与
+   OSX player 布局不一致。先 `SwitchActiveBuildTarget` 再构建。
+
 ## 14. 风险
 
 - 段 z 步进与既有内容 z 交互（fallback renderer 穿插精度）——M1 即验证；
