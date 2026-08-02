@@ -199,7 +199,16 @@ Shader "FairyGUI/InstancedUI"
                     col.rgb = fixed3(grey, grey, grey);
                 }
                 if (i.sdfMW.y > 2.5)
-                    col.a *= curveCoverage(i.uv, (uint)(i.sdfMW.x + 0.5)); //uv = em-space pos
+                {
+                    //padding = glyphIndex | bold << 20 (bit 20, NOT 24: the
+                    //vertex-stream twin rebuilds this through float32, exact
+                    //only to 2^24 — an odd index + 2^24 would round away)
+                    uint pidx = (uint)(i.sdfMW.x + 0.5);
+                    uint cgi = pidx & 0xFFFFFu;
+                    float bEm = min((pidx >> 20u) != 0u ? 24.0 : 0.0, curveBandEm(cgi));
+                    col.a *= saturate(0.5
+                        + (curveSignedEm(i.uv, cgi, bEm) + bEm) / curveEmPerPx(i.uv));
+                }
                 else if (i.sdfMW.y > 0.5)
                     col.a *= sdfCoverage(i.sdfPos, i.sdfRadii, i.sdfMW);
                 col.a *= softFactor(i.scrolledPos, _ClipRect, _ClipSoft);

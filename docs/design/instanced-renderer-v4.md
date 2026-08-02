@@ -559,6 +559,37 @@ badPx 均 0.000%，SDF 圆角矩形认领为 1 个解析 quad、badPx 0.074%（�
 `Stage.ForceUpdate()`，从 player loop 内部调用会重入 PlayerLoop 被 Unity 中止
 （AGENTS.md 坑位 20）。
 
+
+## 批 5b：曲线字体解析描边/阴影/假粗体（2026-08-02）
+
+覆盖函数本来就算出**逐像素有符号距离**（`signedPx`，内正外负）——三个效果全部复用它，
+单遍完成，而不是其他字体走的 `GenerateOutline/GenerateShadow` 顶点复制（4/8 份偏移拷贝，
+对曲线文本每份都是一次完整覆盖求值，且拷贝进不了实例侧表）：
+
+| 效果 | 实现 | 参数通道 |
+|---|---|---|
+| **假粗体** | 阈值平移 +24 font units（≈0.024em/侧，随字号等比缩放） | **逐字形**：uv 编码扩为 ×8 步长（`index*8 + bold*4 + nu*2`），UBB `[b]` 分段生效；实例路径走 `padding` **bit 20** |
+| **描边** | 距离带染色 `[edge, edge+w]`，fill-over-outline 预乘合成 | 字段级：`MaterialPropertyBlock`（`_CurveFx.x` px + `_CurveOutlineColor`） |
+| **阴影** | 偏移点二次覆盖求值，垫底合成 | 字段级：`_CurveFx.zw` px（屏幕向下为正）+ `_CurveShadowColor` |
+
+**三个非显然的判断，都被实验钉住：**
+
+1. **bold 位在 bit 20 而不是 bit 24**：顶点流路径经 float32 重建 glyphIndex（精确域 2^24），
+   `index | 1<<24` 会把奇数索引舍到相邻字形；`index | 1<<20` 上限 2^21，精确。
+2. **距离场的带内局部性**：winding 用本带即精确（不进带的曲线不可能与该带的水平射线相交），
+   但**距离**的最近曲线可能只在邻带索引里。效果启用时距离扫描扩到 band±1（winding 仍只算本带），
+   保证到一个带高的可达域；效果宽度在 shader 里钳到带高。**注入实验**：关掉邻带扩展，
+   'H' 与 3px 描边都测不出（竖笔贯穿所有带、窄环藏在本带内）——换 '三'（杠间是空带）+
+   10px 描边（≈一个带高，外环必然跨带）后故障态 ringed=0 全红、修复态全绿。探针要打在
+   机制的必经之路上，不是随便挑个字形。
+3. **描边/阴影字段在实例流下保持原生渲染**（与旋转曲线叶同一 sort barrier 机制）：
+   实例 quad 装不下 property block 的效果参数。bold-only 字段照常被认领（f8 像素 mean=0.000）。
+
+关闭路径同样有门：效果从有到无时 property block 必须清零重推（f3），否则陈旧参数继续画。
+
+验收：`CurveEffectsSuite` 8 项（含双向注入证明）；全量门禁双后端 **564/564**。
+CurveBaseFont 剩余限制：单字体文件、效果宽度钳于带高、假粗体不加宽 advance、点匹配复合字形。
+
 ## 14. 风险
 
 - 段 z 步进与既有内容 z 交互（fallback renderer 穿插精度）——M1 即验证；

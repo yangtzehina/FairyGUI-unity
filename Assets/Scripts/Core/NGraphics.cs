@@ -106,6 +106,10 @@ namespace FairyGUI
         //during StartDraw/DrawGlyph — the instanced stream emits analytic curve
         //quads from this table instead of reassembling the encoded native mesh
         internal System.Collections.Generic.List<CurveTextMesh.GlyphQuad> _curveGlyphs;
+        //batch 5b: this leaf's curve text has outline/shadow active — the
+        //stream must NOT claim it (the per-quad instance carries no effect
+        //params), so it keeps its native renderer as a sort barrier
+        internal bool _curveFxActive;
 
         //color tier (batch 3): claimed leaves defer native mesh color rewrites
         //(the renderer is off; the stream pushes instance colors directly);

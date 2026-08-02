@@ -1570,7 +1570,11 @@ namespace FairyGUI
             //(FairyGUI/CurveText) and becomes a sort barrier.
             bool curveLeaf = (graphics.meshFactory is CurveTextMesh cmProbe && cmProbe.glyphQuads.Count > 0)
                 || (graphics._curveGlyphs != null && graphics._curveGlyphs.Count > 0);
-            if (curveLeaf && (Mathf.Abs(m.m01) > 1e-4f || Mathf.Abs(m.m10) > 1e-4f))
+            //batch 5b: outline/shadow live in the leaf's property block, which
+            //an instanced quad cannot carry — same native-renderer barrier as
+            //rotation (bold is fine: it rides padding bit 20)
+            if (curveLeaf && (Mathf.Abs(m.m01) > 1e-4f || Mathf.Abs(m.m10) > 1e-4f
+                || graphics._curveFxActive))
             {
                 p.stageCount = 0;
                 p.instanceable = false;
@@ -1809,7 +1813,10 @@ namespace FairyGUI
                         uvB = new Vector4(bb.x, bb.w, bb.z, bb.w),
                         color = col,
                         flags = QuadInstance.FlagCurveGlyph | extraFlags,
-                        padding = (uint)gq.glyphIndex
+                        //bold at bit 20, NOT 24: the vertex path rebuilds this
+                        //through float32 (exact to 2^24) — index|1<<24 would
+                        //round odd indices to the neighbouring glyph
+                        padding = (uint)gq.glyphIndex | (gq.bold ? 1u << 20 : 0u)
                     });
                 }
                 n++;

@@ -20,6 +20,7 @@ namespace FairyGUI
             public Vector4 bbox;   //glyph em box (padded for AA)
             public int glyphIndex; //-1: solid rect (underline/strikethrough)
             public Color32 color;  //per-quad (UBB runs color independently)
+            public bool bold; //batch 5b: faux-bold bit, rides padding bit 20 in-stream
         }
 
         public string text { get; private set; }

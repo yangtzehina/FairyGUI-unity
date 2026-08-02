@@ -112,6 +112,7 @@ public static class InstancedValidationAll
         RunSuite("m8_5_renderless", InstancedM85Suite.Run);
         RunSuite("m8_automount", FqsAutoMountSuite.Run);
         RunSuite("m8_superset", FqsSupersetSuite.Run);
+        RunSuite("curve_effects", CurveEffectsSuite.Run);
         RunSuite("perf_invariants", InstancedPerfInvariantSuite.Run);
         RunSuite("mvvm_reentrancy", BinderReentrancyCheck.Run);
 

@@ -177,7 +177,13 @@ Shader "FairyGUI/InstancedUIAttribs"
                     col.rgb = fixed3(grey, grey, grey);
                 }
                 if (i.sdfMW.y > 2.5)
-                    col.a *= curveCoverage(i.uv, (uint)(i.sdfMW.x + 0.5)); //uv = em-space pos
+                {
+                    uint pidx = (uint)(i.sdfMW.x + 0.5); //exact: index|bold<<20 < 2^21
+                    uint cgi = pidx & 0xFFFFFu;
+                    float bEm = min((pidx >> 20u) != 0u ? 24.0 : 0.0, curveBandEm(cgi));
+                    col.a *= saturate(0.5
+                        + (curveSignedEm(i.uv, cgi, bEm) + bEm) / curveEmPerPx(i.uv));
+                }
                 else if (i.sdfMW.y > 0.5)
                     col.a *= sdfCoverage(i.sdfPos, i.sdfRadii, i.sdfMW.xy);
                 col.a *= softFactor(i.scrolledPos, _ClipRect, _ClipSoft);

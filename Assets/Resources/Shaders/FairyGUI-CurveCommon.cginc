@@ -24,19 +24,17 @@ float2 curveEvalQ(float2 a, float2 b, float2 cpt, float t)
     return it * it * a + 2.0 * it * t * b + t * t * cpt;
 }
 
-//analytic glyph coverage from quadratic outlines — winding by Lengyel's
-//sign-class table (0x2E74), AA from sampled-then-refined nearest distance
-float curveCoverage(float2 gp, uint glyphIndex)
+//one band's curve list: accumulate nearest-curve distance^2 and (when
+//doWinding) horizontal-ray winding. Winding is EXACT from the point's own
+//band alone — a curve that never enters the band cannot cross its ray —
+//which is why neighbour bands contribute distance only (batch 5b effects).
+void curveBandScan(float2 gp, uint glyphIndex, uint band, bool doWinding,
+    inout int winding, inout float best)
 {
-    float4 bbox = CURVE_LOAD(_CurveGlyphsTex, glyphIndex);
-    float bh = max(bbox.w - bbox.y, 1.0);
-    int band = clamp((int)((gp.y - bbox.y) / bh * 8.0), 0, 7);
-    float4 bt4 = CURVE_LOAD(_CurveBandsTex, glyphIndex * 8u + (uint)band);
+    float4 bt4 = CURVE_LOAD(_CurveBandsTex, glyphIndex * 8u + band);
     uint bStart = (uint)(bt4.x + 0.5);
     uint bCount = (uint)(bt4.y + 0.5);
 
-    int winding = 0;
-    float best = 1e12;
     for (uint k = 0; k < bCount; k++)
     {
         uint ii = bStart + k;
@@ -52,7 +50,7 @@ float curveCoverage(float2 gp, uint glyphIndex)
 
         uint code = (0x2E74u >> (((A.y > 0.0) ? 2u : 0u)
             + ((B.y > 0.0) ? 4u : 0u) + ((C.y > 0.0) ? 8u : 0u))) & 3u;
-        if (code != 0u)
+        if (doWinding && code != 0u)
         {
             float ay = A.y - 2.0 * B.y + C.y;
             float by = A.y - B.y;
@@ -94,10 +92,54 @@ float curveCoverage(float2 gp, uint glyphIndex)
         float2 qf = curveEvalQ(A, B, C, bt);
         best = min(best, dot(qf, qf));
     }
+}
+
+float curveEmPerPx(float2 gp)
+{
+    return max(length(float2(ddx(gp.x), ddy(gp.x))), 1e-6);
+}
+
+//one band's height in em units: the guaranteed reach of the distance field.
+//Any curve within distance d of a point overlaps [y-d, y+d] in y, and bands
+//k-1..k+1 cover exactly one band height on each side — so effects (bold
+//expansion, outline width) are valid up to this and callers clamp to it.
+float curveBandEm(uint glyphIndex)
+{
+    float4 bbox = CURVE_LOAD(_CurveGlyphsTex, glyphIndex);
+    return max(bbox.w - bbox.y, 1.0) / 8.0;
+}
+
+//signed distance to the outline in EM units (+inside / -outside). reachEm > 0
+//adds the two neighbour bands to the DISTANCE search (winding stays own-band:
+//it is exact there and wrong anywhere else) so the value is accurate out to
+//one band height — what strokes and bold expansion need beyond the AA fringe.
+float curveSignedEm(float2 gp, uint glyphIndex, float reachEm)
+{
+    float4 bbox = CURVE_LOAD(_CurveGlyphsTex, glyphIndex);
+    float bh = max(bbox.w - bbox.y, 1.0);
+    uint band = (uint)clamp((int)((gp.y - bbox.y) / bh * 8.0), 0, 7);
+
+    int winding = 0;
+    float best = 1e12;
+    curveBandScan(gp, glyphIndex, band, true, winding, best);
+    if (reachEm > 0.0)
+    {
+        int sink = 0;
+        if (band > 0u)
+            curveBandScan(gp, glyphIndex, band - 1u, false, sink, best);
+        if (band < 7u)
+            curveBandScan(gp, glyphIndex, band + 1u, false, sink, best);
+    }
 
     float dist = sqrt(best);
-    float emPerPx = max(length(float2(ddx(gp.x), ddy(gp.x))), 1e-6);
-    float signedPx = (winding != 0 ? dist : -dist) / emPerPx;
+    return winding != 0 ? dist : -dist;
+}
+
+//analytic glyph coverage from quadratic outlines — winding by Lengyel's
+//sign-class table (0x2E74), AA from sampled-then-refined nearest distance
+float curveCoverage(float2 gp, uint glyphIndex)
+{
+    float signedPx = curveSignedEm(gp, glyphIndex, 0.0) / curveEmPerPx(gp);
     return saturate(0.5 + signedPx);
 }
 

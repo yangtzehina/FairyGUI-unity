@@ -4,7 +4,9 @@
 // coverage from the CurveFontStore tables (bound as global buffers by
 // EnsureBuffers). Vertex uv encodes x = glyphIndex*4 + nu*2 (nu = horizontal
 // 0..1 across the glyph's PADDED em box; pad = CurveBaseFont.PadEm font units)
-// and y = raw em Y; uv.x < 0 marks solid rects (underline). The tables are
+// and y = raw em Y; uv.x < 0 marks solid rects (underline). Batch 5b widened
+// the stride: x = glyphIndex*8 + bold*4 + nu*2 (bold = faux-bold bit; exact in
+// float32 to two million glyphs). The tables are
 // RGBAFloat data textures (batch 5) — no SSBO, runs on WebGL2/GLES3.0.
 Shader "FairyGUI/CurveText"
 {
@@ -22,6 +24,13 @@ Shader "FairyGUI/CurveText"
 
         _BlendSrcFactor ("Blend SrcFactor", Float) = 5
         _BlendDstFactor ("Blend DstFactor", Float) = 10
+
+        //batch 5b effects, normally driven per-field via MaterialPropertyBlock
+        //(CurveBaseFont.StartDraw); material defaults keep plain text plain.
+        //x = outline width px, y = unused, zw = shadow offset px (screen down+)
+        _CurveFx ("Curve FX", Vector) = (0,0,0,0)
+        _CurveOutlineColor ("Curve Outline Color", Color) = (0,0,0,1)
+        _CurveShadowColor ("Curve Shadow Color", Color) = (0,0,0,1)
     }
 
     SubShader
@@ -89,6 +98,10 @@ Shader "FairyGUI/CurveText"
                     #endif
                 };
 
+                float4 _CurveFx;
+                fixed4 _CurveOutlineColor;
+                fixed4 _CurveShadowColor;
+
                 CBUFFER_START(UnityPerMaterial)
                 #ifdef CLIPPED
                 float4 _ClipBox = float4(-2, -2, 0, 0);
@@ -129,17 +142,53 @@ Shader "FairyGUI/CurveText"
                     fixed4 col = i.color;
                     if (i.texcoord.x >= 0.0)
                     {
-                        //decode: glyph index, then the em position from the
-                        //normalized horizontal across the PADDED box
-                        float gx = i.texcoord.x * 0.25;
+                        //decode (x8 stride): glyph index, faux-bold bit, then
+                        //the em position across the PADDED box
+                        float gx = i.texcoord.x * 0.125;
                         float gi = floor(gx);
                         uint glyphIndex = (uint)gi;
-                        float nu = (gx - gi) * 2.0;
+                        float f8 = (gx - gi) * 8.0;
+                        float boldF = f8 >= 4.0 ? 1.0 : 0.0;
+                        float nu = (f8 - boldF * 4.0) * 0.5;
                         float4 bbox = CURVE_LOAD(_CurveGlyphsTex, glyphIndex);
                         float pbx = bbox.x - CURVE_PAD;
                         float pbz = bbox.z + CURVE_PAD;
                         float2 gp = float2(pbx + nu * (pbz - pbx), i.texcoord.y);
-                        col.a *= curveCoverage(gp, glyphIndex);
+
+                        float epp = curveEmPerPx(gp);
+                        //faux bold: ~0.024em of stem each side — em-defined so
+                        //it scales with size exactly like a real weight would
+                        float bandEm = curveBandEm(glyphIndex);
+                        float boldEm = min(boldF * 24.0, bandEm);
+                        //effect widths cap at one band height: beyond it the
+                        //distance field cannot see the nearest curve (banding)
+                        float owEm = min(_CurveFx.x * epp, max(bandEm - boldEm, 0.0));
+                        float sEm = curveSignedEm(gp, glyphIndex, boldEm + owEm);
+                        float fillCov = saturate(0.5 + (sEm + boldEm) / epp);
+
+                        //premultiplied coverage stack: fill over outline over
+                        //shadow, resolved back to straight alpha at the end
+                        float aP = fillCov;
+                        float3 rgbP = col.rgb * fillCov;
+                        if (owEm > 0.0)
+                        {
+                            float ringCov = saturate(0.5 + (sEm + boldEm + owEm) / epp);
+                            float oA = ringCov * _CurveOutlineColor.a * (1.0 - fillCov);
+                            rgbP += _CurveOutlineColor.rgb * oA;
+                            aP += oA;
+                        }
+                        if (abs(_CurveFx.z) + abs(_CurveFx.w) > 0.0)
+                        {
+                            //offset is screen px, down-positive; em y runs up
+                            float2 gpS = gp + float2(-_CurveFx.z, _CurveFx.w) * epp;
+                            float sCov = saturate(0.5
+                                + (curveSignedEm(gpS, glyphIndex, boldEm) + boldEm) / epp);
+                            float shA = sCov * _CurveShadowColor.a * (1.0 - aP);
+                            rgbP += _CurveShadowColor.rgb * shA;
+                            aP += shA;
+                        }
+                        col.rgb = aP > 1e-4 ? rgbP / aP : col.rgb;
+                        col.a *= aP;
                     }
                     //uv.x < 0: solid rect (underline/strikethrough), coverage 1
 
