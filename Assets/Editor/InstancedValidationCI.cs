@@ -64,6 +64,15 @@ namespace FairyGUIEditor
             if (i >= 0 && i + 1 < args.Length)
                 output = args[i + 1];
 
+            //publish the session state BEFORE anything that can Fail(): Fail()
+            //-> WriteReport() reads the path back out of SessionState, so an
+            //early return from above this line writes the FAIL verdict to the
+            //default path and leaves the file CI actually reads holding a stale
+            //PASS from an earlier run — a green CI on a failed run
+            SessionState.SetString(kOutputKey, output);
+            SessionState.SetFloat(kDeadlineKey, (float)(EditorApplication.timeSinceStartup + kTimeoutSeconds));
+            SessionState.SetBool(kActiveKey, true);
+
             string backend = "vertex";
             int b = Array.IndexOf(args, "-ciBackend");
             if (b >= 0 && b + 1 < args.Length)
@@ -73,11 +82,7 @@ namespace FairyGUIEditor
                 Fail($"unknown -ciBackend '{backend}' (expected vertex|buffer|both)");
                 return;
             }
-
-            SessionState.SetString(kOutputKey, output);
             SessionState.SetString(kBackendKey, backend);
-            SessionState.SetFloat(kDeadlineKey, (float)(EditorApplication.timeSinceStartup + kTimeoutSeconds));
-            SessionState.SetBool(kActiveKey, true);
 
             try
             {
