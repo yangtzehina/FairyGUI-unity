@@ -92,6 +92,12 @@ DisplayObject 树（不动）
 └────────────────────────────────────────────────────────┘
 ```
 
+自 2026-08-08 起，文件布局与上图分层一致：`InstancedUIStream.cs`（状态/协议
+入口/生命周期）+ `.Compile.cs`（编译层）+ `.Resources.cs`（资源层）+
+`.Submit.cs`（提交层）+ `.Mount.cs`（M8 拼接与 tier）+ `.Diagnostics.cs`
+（诊断只读面），partial 单类、状态字段全部留在核心文件——拆的是方法可读性，
+不是运行时结构。
+
 挂接点与 MergedBatch（已于 2026-08-08 删除，历史对照数字见 §1.2）相同：`Container.SetRenderingOrderAll` 之后（复用
 `_batchElements` 排序结果），开关为 `Container.instancedRendering`（与
 `mergedBatching` 互斥，后者已走完废弃期并删除）。
