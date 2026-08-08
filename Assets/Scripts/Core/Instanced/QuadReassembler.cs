@@ -9,9 +9,10 @@ namespace FairyGUI
     /// Works on consecutive triangle pairs, so it handles both mesh topologies FairyGUI
     /// produces: independent 4-vertex quads (images, glyphs — indices (0,1,2)(2,3,0))
     /// and shared-vertex grids (scale9 = 16 vertices, 9 quads sharing corners). A pair
-    /// that does not cover exactly 4 distinct vertices, or whose transformed bounds are
-    /// degenerate, is skipped and counted — callers use the skip count to route the
-    /// element to the mesh fallback path.
+    /// that does not cover exactly 4 distinct vertices, whose transformed bounds are
+    /// degenerate, or whose four vertex colors disagree (corner/glyph gradients — an
+    /// instance carries one color) is skipped and counted — callers use the skip count
+    /// to route the element to the mesh fallback path.
     ///
     /// Pure over lists (no Mesh dependency) so synthetic-data validation can drive it
     /// directly.
@@ -119,6 +120,32 @@ namespace FairyGUI
                 {
                     skippedPairs++;
                     continue;
+                }
+
+                //an instance carries ONE color: a pair whose four vertices
+                //disagree (RectMesh corner gradients, TextFormat.gradientColor
+                //glyphs) used to flatten to whichever vertex the index order
+                //put first — silently wrong AND topology-dependent. Route the
+                //element to the native path instead (wrong batching beats
+                //wrong pixels)
+                if (hasColors)
+                {
+                    Color32 c0 = colors[sIndices[0]];
+                    bool uniform = true;
+                    for (int k = 1; k < 4; k++)
+                    {
+                        Color32 ck = colors[sIndices[k]];
+                        if (ck.r != c0.r || ck.g != c0.g || ck.b != c0.b || ck.a != c0.a)
+                        {
+                            uniform = false;
+                            break;
+                        }
+                    }
+                    if (!uniform)
+                    {
+                        skippedPairs++;
+                        continue;
+                    }
                 }
 
                 output.Add(new QuadInstance

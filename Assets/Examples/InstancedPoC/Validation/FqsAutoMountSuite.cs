@@ -5,7 +5,7 @@ using FairyGUI;
 using UnityEngine;
 
 /// <summary>
-/// Auto-mount suite (M8 follow-on, 25 checks). FqsAutoMount turns the manual
+/// Auto-mount suite (M8 follow-on, 26 checks). FqsAutoMount turns the manual
 /// two-line bake integration into a per-project switch: package-created
 /// components look up blobs through a pluggable provider at construction, ARM
 /// them on the container, and the enclosing stream realizes the mount at
@@ -323,6 +323,14 @@ public static class FqsAutoMountSuite
                 other != null
                 && FqsAutoMount.BlobFileName(chosen) != FqsAutoMount.BlobFileName(other)
                 && FqsAutoMount.BlobFileName(chosen).EndsWith("_" + chosen.id));
+
+            //--- c15b: contentScaleLevel rides the filename ------------------
+            //per-level blob sets coexist in one Resources folder: level 0 is
+            //the bare name (pre-suffix blobs stay valid), level N appends _sN
+            env.Check("c15b.scale level suffixes the blob name, level 0 stays bare",
+                FqsAutoMount.BlobFileName(chosen, 0) == FqsAutoMount.BlobFileName(chosen)
+                && FqsAutoMount.BlobFileName(chosen, 2) == FqsAutoMount.BlobFileName(chosen) + "_s2"
+                && FqsAutoMount.BlobFileName(chosen, 3).EndsWith("_" + chosen.id + "_s3"));
 
             //--- c16: REGRESSION — non-exported components are never looked up
             lastAsked = null;

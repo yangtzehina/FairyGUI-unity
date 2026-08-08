@@ -96,7 +96,7 @@ namespace FairyGUIEditor
                         //a non-exported component shadowing an exported one,
                         //and case-only differences on a case-insensitive
                         //filesystem all resolve to distinct files.
-                        File.WriteAllBytes($"{dir}/{FqsAutoMount.BlobFileName(contentItem)}.fqs.bytes", blob);
+                        File.WriteAllBytes($"{dir}/{FqsAutoMount.BlobFileName(contentItem, GRoot.contentScaleLevel)}.fqs.bytes", blob);
                         baked++;
                         }
                         catch (System.Exception e)

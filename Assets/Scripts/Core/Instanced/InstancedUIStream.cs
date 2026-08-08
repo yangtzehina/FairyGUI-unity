@@ -220,6 +220,35 @@ namespace FairyGUI
                 && stream._OnMountVisibility(obj);
         }
 
+        /// <summary>
+        /// Ancestor-state change (grayed flip, reparent): the other notify
+        /// entries walk UP from the changed object, which can never find a
+        /// stream rooted BELOW it — native content inherits the new state
+        /// through context accumulation while claimed quads keep the baked
+        /// one (the audit's whole-window-gray split). Marks every in-place
+        /// stream whose root sits inside the changed container; streams are
+        /// few and the flips are rare, so the walk is not a hot path.
+        /// </summary>
+        internal static void _NotifyDescendantStreams(Container changed)
+        {
+            if (liveInPlaceCount == 0)
+                return;
+            for (int i = sLiveStreams.Count - 1; i >= 0; i--)
+            {
+                InstancedUIStream s = sLiveStreams[i];
+                if (!s._inPlace)
+                    continue;
+                for (DisplayObject p = s._container; p != null; p = p.parent)
+                {
+                    if (ReferenceEquals(p, changed))
+                    {
+                        s._MarkStructureDirty();
+                        break;
+                    }
+                }
+            }
+        }
+
         class Segment
         {
             //cross-atlas key (batch 3d): a segment carries up to 4 textures
@@ -887,7 +916,14 @@ namespace FairyGUI
                     //re-arm the warning: each suspension period warns once
                     //(Extract only runs on structure dirt, so no spam)
                     _rootMaskWarned = false;
-                    ExtractContainer(_container, _rootWorldToLocal, 0, _container.grayed, 0);
+                    //grayed inherits from ABOVE the stream root too (native
+                    //content gets it via context accumulation) — recompiles
+                    //re-read the chain, _NotifyDescendantStreams triggers them
+                    bool rootGrayed = _container.grayed;
+                    if (_inPlace && !rootGrayed)
+                        for (DisplayObject a = _container.parent; a != null; a = a.parent)
+                            if (a.grayed) { rootGrayed = true; break; }
+                    ExtractContainer(_container, _rootWorldToLocal, 0, rootGrayed, 0);
                 }
 
                 if (_sortAdjacency)
@@ -1739,6 +1775,13 @@ namespace FairyGUI
                     _staging.RemoveRange(p.stageStart, p.stageCount);
                     p.stageCount = 0;
                     p.instanceable = false;
+                    //re-admission parity: a leaf rejected HERE (born gradient/
+                    //polygon) must react to content pushes exactly like a leaf
+                    //that was claimed once and then released — otherwise the
+                    //same leaf re-admits or not depending on its history.
+                    //In-place streams only: replica (bake) leaves are throwaway
+                    if (_inPlace && p.graphics._instancedBy == null && p.graphics._lastInstancedBy == null)
+                        p.graphics._lastInstancedBy = this;
                 }
                 else
                 {

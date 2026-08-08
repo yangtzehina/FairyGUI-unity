@@ -6,7 +6,7 @@ using FairyGUI;
 using UnityEngine;
 
 /// <summary>
-/// M1 quad-reassembler synthetics (17 checks), rebuilt from commit f21e803's
+/// M1 quad-reassembler synthetics (19 checks), rebuilt from commit f21e803's
 /// record: "canonical + alternate index patterns, 16-vertex scale9 grid -> 9
 /// quads, rotated-UV corner mapping, 90-degree rotation matrix,
 /// collapsed/zero-area pairs, missing colors, offset, flags, stride".
@@ -217,7 +217,30 @@ public static class InstancedReassemblerSuite
             bool shortFallback = n3 == 1 && o[0].color == Color.white;
             Check("q15.missing or short color list falls back to white",
                 whiteFallback && shortFallback);
-            Check("q16.color is taken from the quad's first corner vertex", fromFirst);
+            Check("q16.uniform vertex color propagates to the instance", fromFirst);
+        }
+
+        //--- q18/q19: non-uniform colors reject (flatten regression) ---------
+        //an instance carries ONE color: gradient pairs used to flatten to
+        //whichever vertex the index order put first — now they skip so the
+        //leaf falls back to its native renderer
+        {
+            var v = new List<Vector3>(); var uv = new List<Vector2>(); var c = new List<Color32>();
+            AddQuad(v, uv, c, 0, 0, 10, 10, Color.white);
+            c[1] = Color.red; //one disagreeing corner is enough
+            int n = Run1(v, uv, c, Tris(0, 1, 2, 2, 3, 0), out o, out skipped);
+            Check($"q18.gradient pair skips instead of flattening (n={n} skipped={skipped})",
+                n == 0 && skipped == 1);
+
+            v.Clear(); uv.Clear(); c.Clear();
+            AddQuad(v, uv, c, 0, 0, 10, 10, new Color32(1, 2, 3, 4)); //uniform
+            AddQuad(v, uv, c, 20, 0, 30, 10, Color.white);            //gradient
+            c[5] = Color.blue;
+            int n2 = Run1(v, uv, c, Tris(0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4), out o, out skipped);
+            Check($"q19.mixed mesh keeps the uniform quad, skips the gradient one (n={n2} skipped={skipped})",
+                n2 == 1 && skipped == 1
+                && Mathf.Abs(o[0].color.r - 1 / 255f) < 0.01f
+                && Mathf.Abs(o[0].color.a - 4 / 255f) < 0.01f);
         }
 
         //--- q17: offset, flags and the frozen GPU stride --------------------

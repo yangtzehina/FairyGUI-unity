@@ -286,6 +286,10 @@ namespace FairyGUI
                     //grayed is baked into instance flags (bit4) and inherits down
                     //the subtree — a recompile re-evaluates both
                     InstancedUIStream._NotifyStructure(this);
+                    //and DOWN: a stream rooted below this container inherits
+                    //the flip through the root-grayed chain walk, not context
+                    if (this is Container gc)
+                        InstancedUIStream._NotifyDescendantStreams(gc);
                 }
             }
         }
@@ -1050,6 +1054,10 @@ namespace FairyGUI
                     parent = value;
                     UpdateHierarchy();
                 }
+                //streams INSIDE the moved subtree re-read their new ancestor
+                //chain (grayed) on recompile — the up-walk above cannot see them
+                if (this is Container mc)
+                    InstancedUIStream._NotifyDescendantStreams(mc);
                 _flags |= Flags.OutlineChanged;
             }
         }

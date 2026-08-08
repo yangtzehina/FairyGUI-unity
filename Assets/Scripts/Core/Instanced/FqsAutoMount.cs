@@ -161,16 +161,43 @@ namespace FairyGUI
         /// </summary>
         public static string BlobFileName(PackageItem resolved)
         {
+            return BlobFileName(resolved, 0);
+        }
+
+        /// <summary>
+        /// Level-aware form: contentScaleLevel selects which image items a
+        /// component builds from, so each level needs its OWN blob — the
+        /// level rides the filename as an _s{N} suffix so per-level sets
+        /// coexist in one Resources folder. Level 0 keeps the bare name
+        /// (every blob baked before the suffix existed is a level-0 blob).
+        /// </summary>
+        public static string BlobFileName(PackageItem resolved, int scaleLevel)
+        {
             string n = resolved.name ?? "";
-            var b = new System.Text.StringBuilder(n.Length + 8);
+            var b = new System.Text.StringBuilder(n.Length + 12);
             foreach (char ch in n)
                 b.Append(char.IsLetterOrDigit(ch) || ch == '_' || ch == '-' ? ch : '_');
-            return b.Append('_').Append(resolved.id).ToString();
+            b.Append('_').Append(resolved.id);
+            if (scaleLevel > 0)
+                b.Append("_s").Append(scaleLevel);
+            return b.ToString();
         }
 
         static byte[] DefaultProvider(UIPackage pkg, PackageItem resolved)
         {
-            var ta = Resources.Load<TextAsset>("Baked/" + pkg.name + "/" + BlobFileName(resolved) + ".fqs");
+            //current level first; the bare name second (level-0 set, or a
+            //project that only ships one level). A wrong-level fallback can
+            //never render wrong-level art: the mount gate compares the baked
+            //level and refuses, exactly as it would with no file at all
+            string dir = "Baked/" + pkg.name + "/";
+            int level = GRoot.contentScaleLevel;
+            if (level > 0)
+            {
+                var leveled = Resources.Load<TextAsset>(dir + BlobFileName(resolved, level) + ".fqs");
+                if (leveled != null)
+                    return leveled.bytes;
+            }
+            var ta = Resources.Load<TextAsset>(dir + BlobFileName(resolved) + ".fqs");
             return ta != null ? ta.bytes : null;
         }
 

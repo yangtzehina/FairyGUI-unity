@@ -84,7 +84,9 @@ namespace FairyGUI
             int bakedLevel = FqsBlob.DecodeScaleLevel(d.flags);
             if (bakedLevel != GRoot.contentScaleLevel)
             {
-                Warn($"FQS mount refused: blob baked at contentScaleLevel {bakedLevel}, running at {GRoot.contentScaleLevel}.");
+                Warn($"FQS mount refused: blob baked at contentScaleLevel {bakedLevel}, running at {GRoot.contentScaleLevel}. "
+                    + "Bake a set for this level too (set the Game view to a resolution that yields it, then Tools/FairyGUI/Bake Packages (FQS)) — "
+                    + "per-level blobs coexist via the _s{N} filename suffix and the default provider picks the running level.");
                 return false;
             }
 

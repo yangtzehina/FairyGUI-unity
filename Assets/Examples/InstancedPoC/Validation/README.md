@@ -35,7 +35,7 @@ InstancedValidationAll.RunBothBackends()
 buffer 路径正常,且以对照实验坐实像素来自实例 draw(关段渲染器像素消失、开回来复现,
 而叶子 `forceRenderingOff=true`,原生渲染器不参与)。全套 227 项在 buffer 后端一次
 全绿,双后端合计 **454/454**（批5b 并入后 19 套 282 项/双后端 **564/564** 复验全绿；
-作用域栅栏套件并入后 20 套 297 项/双后端 **594/594**；栅栏改绝对语义（无限盒）+ 对抗评审二轮回归并入后 20 套 308 项/双后端 **616/616**；曲线换字体回归 + 事件语义套件并入后 21 套 319 项/双后端 **638/638**；ColorFilter 认领缺口套件并入后 22 套 327 项/双后端 **654/654**，2026-08-08 实测）。
+作用域栅栏套件并入后 20 套 297 项/双后端 **594/594**；栅栏改绝对语义（无限盒）+ 对抗评审二轮回归并入后 20 套 308 项/双后端 **616/616**；曲线换字体回归 + 事件语义套件并入后 21 套 319 项/双后端 **638/638**；ColorFilter 认领缺口套件并入后 22 套 327 项/双后端 **654/654**；祖先 grayed + 四角渐变 + 档位命名回归并入后 22 套 334 项/双后端 **668/668**，2026-08-08 实测）。
 
 **当初的触发条件未查明**,所以默认仍是顶点流(怪癖若复发,验证照样跑得起来);
 但正式验收请跑 `-ciBackend both`。
@@ -53,7 +53,7 @@ Unity -batchmode -projectPath . \
 有失败 1）。日志与报告首行是可 grep 的判定行：
 
 ```
-INSTANCED VALIDATION VERDICT: PASS pass=327 fail=0
+INSTANCED VALIDATION VERDICT: PASS pass=334 fail=0
 ```
 
 harness 注意事项（都踩过）：
@@ -71,13 +71,13 @@ harness 注意事项（都踩过）：
 
 | 套件 | 项数 | 覆盖 |
 |---|---|---|
-| `InstancedReassemblerSuite` | 17 | M1 quad 重组器合成数据：规范/替代索引模式、scale9 16 顶点→9 quad、UV 按包围盒角映射、90° 旋转、45° 拒绝、退化对、扇形伪阳性、色缺省、offset/flags/stride。**无场景无像素,验证栈的底座** |
+| `InstancedReassemblerSuite` | 19 | M1 quad 重组器合成数据：规范/替代索引模式、scale9 16 顶点→9 quad、UV 按包围盒角映射、90° 旋转、45° 拒绝、退化对、扇形伪阳性、色缺省、offset/flags/stride、**四角渐变拒绝**（压平回归：非均匀顶点色跳过）。**无场景无像素,验证栈的底座** |
 | `InstancedClipStackSuite` | 10 | M3 裁剪栈：窗口变换含 y 取反、嵌套折叠(交集)、软裁剪非对称映射 (1,2,3,4)→(1,4,3,2)、去重、逐叶 clipIndex 盖章、遮罩子树跳过、裁剪区增多而 draw 数持平 |
 | `InstancedScopeBarrierSuite` | 26 | 容器级作用域栅栏（审计缺口 + 对抗评审二轮回归）：stencil mask / painting / GoWrapper 三类三明治的**像素 z 序**（上蓝下红中间作用域，三探针）、作用域关 run 计数、运行时在 clip 容器上设 mask 触发重编译（notify 缺口回归）、root-mask 挂起认领/移除恢复（每挂起期各警一次）、**双 renderer GoWrapper**（块尾槽数学 _MaxRenderingOrder）、**fairyBatching 宿主**（eraser 走 SetRenderingOrderAll 赋序）、**相邻双作用域**（中间 run 被两栅栏夹持）、reversedMask 栅栏 + **运行时翻转通知**（属性化回归） |
 | `InstancedM7SdfSuite` | 17 | M7 SDF：圆角/描边/正圆认领、饼图/渐变/真椭圆/旋转/非均匀缩放/超 255px 半径退回原生、quad 计数、半径与描边宽打包、像素探针(内部精确/角落裁掉/描边带)、原生回退可见并按 run 交织 |
 | `M4ScenarioSuite` | 19 | 推送脏协议：隐藏/显示、滤镜开关、`graphics.enabled`、重父级即时自恢复、跨根移动单一 owner、多边形回退与再入、文本增长、dispose 恢复 |
 | `InstancedColorFilterSuite` | 8 | ColorFilter 认领缺口（对抗评审确认的预存缺陷）：已认领 Image 叶**运行时**挂 ColorFilter（游戏图标置灰写法）→ 结构通道释放走原生、**灰度像素实测 ~(150,150,150)**、回退叶成 run 栅栏、无关重编译不再认领（谓词回归）、摘除滤镜后**全 null keyword 数组**仍可重新认领、自定义材质半边谓词双向 |
-| `InstancedBatch1Suite` | 14 | blend 回退与 run 屏障、grayed 子树继承与精确 luma、MergedBatch/重复流互斥 |
+| `InstancedBatch1Suite` | 18 | blend 回退与 run 屏障、grayed 子树继承与精确 luma、**祖先 grayed**（流根上方置灰经通知+根链吸收，像素级）、**渐变矩形回退与再入**（含"生来即拒"叶的再入对等）、MergedBatch/重复流互斥 |
 | `InstancedBatch2Suite` | 8 | 文本 slack 生命周期（缩/涨/越界/等长 churn、幽灵尾）、认领叶 sortingOrder 省写与释放回同步 |
 | `InstancedBatch3Suite` | 19 | 颜色 tier c1-c6、transform 槽 t1-t10（含槽内 clip 跟随、溢出探针、嵌套槽）、Extract 增量化 e1-e3 |
 | `InstancedBatch3dSuite` | 10 | 跨图集段键：合段、6 纹理 4+2 裂段、逐槽像素精确、churn 保槽位、grayed 共存 |
@@ -87,7 +87,7 @@ harness 注意事项（都踩过）：
 | `InstancedM82Suite` | 19 | M8-2 mount 融合：陈旧/篡改/敌意计数拒挂、拼接、**像素闸门 diff=0**、mount 走槽、烘焙叶上的内容/颜色 tier、同帧自愈、失效阶梯与回退 |
 | `InstancedM84Suite` | 20 | M8-4 分层：可见性 g1-g16（叶/容器隐显零重编译、隐藏态跨重拼接存活、blob 外内容显示优雅失效）、内层变换 tier、t1-t4 六状态过场像素全等且零重编译 |
 | `InstancedM85Suite` | 14 | M8-5 无渲染器叶：defer 作用域、认领态零渲染器、**像素闸门 diff=0**、tier-2/颜色 tier 免渲染器、命中测试、释放物化、宽限期回退 |
-| `FqsAutoMountSuite` | 25 | CreateObject 自动挂载：装填/兑现时序、provider 缓存、defer 阈值、嵌套作用域、**像素对照 diff=0**、陈旧回退。其中 **8 项是以对抗审查确认缺陷命名的回归项**：删除内容不留幽灵（构造期绑定的核心缺陷）、id 定身份、非导出组件不查 blob、分支解析键、contentScaleLevel 门、无源哈希拒绝、实例级拒绝不锁定、Bake 恢复调用方 mount。另有 c14/c21-c24 验源哈希门：覆盖**全部加载路径**（真走一遍字节数组/bundle 形态并与 Resources 比同值），且门禁值**跨依赖包**（blob 会冻结别的包的几何与图集 UV） |
+| `FqsAutoMountSuite` | 26 | CreateObject 自动挂载：装填/兑现时序、provider 缓存、defer 阈值、嵌套作用域、**像素对照 diff=0**、陈旧回退。其中 **8 项是以对抗审查确认缺陷命名的回归项**：删除内容不留幽灵（构造期绑定的核心缺陷）、id 定身份、非导出组件不查 blob、分支解析键、contentScaleLevel 门（含 **_sN 档位命名契约**）、无源哈希拒绝、实例级拒绝不锁定、Bake 恢复调用方 mount。另有 c14/c21-c24 验源哈希门：覆盖**全部加载路径**（真走一遍字节数组/bundle 形态并与 Resources 比同值），且门禁值**跨依赖包**（blob 会冻结别的包的几何与图集 UV） |
 | `FqsSupersetSuite` | 13 | M8-7 超集烘焙：隐藏页进 blob（2→4 叶）、字节级重烘一致（还原纯度）、**首次显示零重编译**、六连翻页零重编译 + 逐状态像素全等、**命中测试三件套**（当前页可点/隐藏页不可点/翻页互换）、超集关闭时优雅降级 |
 | `CurveEffectsSuite` | 8 | 批5b 曲线字体效果：假粗体加宽（uv 位）、描边环成色/干净关闭（property block 复位）、阴影方向、组合、**跨带接缝双向注入证明**（'三'+10px 描边：故障 ringed=0）、实例流 barrier/认领分流 + 接管像素 |
 | `InstancedPerfInvariantSuite` | 14 | **性能不变量(确定性)**：各 tier 零重编译(槽/滚动/颜色/文本 slack/挂载移动/挂载内隐显)、三纹理合 1 段、段 GO 池化、idle Render 零分配、40 个 renderless 叶零渲染器、加叶不加段、**顶点上传宽度 72B/顶点**（声明值/布局求和/结构体 marshal 三者一致——字段被悄悄加宽时像素门全绿也会被抓到） |
@@ -114,7 +114,7 @@ Unity -batchmode -projectPath . \
 ```
 
 判定行 `INSTANCED PERF VERDICT: PASS|FAIL pass=N fail=M`,退出码随结果。
-**必须单独一个 Unity 进程跑**,不能接在 327 项行为套件后面——那 327 项自己就会留下
+**必须单独一个 Unity 进程跑**,不能接在 334 项行为套件后面——那 334 项自己就会留下
 GC/驱动债,而 batchmode 冷启动天然就是"新鲜会话"。
 
 方法学(针对 M8-5 那次「45% 被读成 18%」的事故):

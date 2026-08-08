@@ -3,7 +3,7 @@ using FairyGUI;
 using UnityEngine;
 
 /// <summary>
-/// Review batch-1 correctness suite (14 checks), rebuilt from commit 593d583's
+/// Review batch-1 correctness suite (18 checks), rebuilt from commit 593d583's
 /// Validation record: non-Normal blendMode leaves stay native and act as sort
 /// barriers (recompile on change, both directions), grayed accumulates down the
 /// subtree and desaturates baked instances, and the MergedBatch / duplicate
@@ -135,6 +135,64 @@ public static class InstancedBatch1Suite
                 && gR.meshRenderer.sortingOrder == gR.renderingOrder
                 && InstancedValidationEnv.NearRGB(env.Probe(px, rectR, 40, 25), 255, 0, 0)
                 && InstancedValidationEnv.NearRGB(env.Probe(px, rectF, 25, 15), 255, 255, 255));
+
+            //--- ancestor grayed (g15-g16): the audit blind spot ------------
+            //graying a container ABOVE the stream root reaches native content
+            //via context accumulation but claimed quads only via the root
+            //grayed chain walk + _NotifyDescendantStreams
+            var outerG = env.Sibling(20, 130, 200, 90);
+            var innerG = new GComponent();
+            innerG.SetSize(180, 70);
+            outerG.AddChild(innerG);
+            innerG.SetXY(10, 10);
+            GGraph rectG = env.Rect(innerG, 10, 10, 60, 40, Color.red);
+            env.Step(2);
+            s3 = new InstancedUIStream(InstancedValidationEnv.C(innerG), default, true, true);
+            env.Step(1);
+            int ecG = s3.extractCount;
+            outerG.grayed = true;
+            env.Step(1);
+            px = env.Capture();
+            var grayG = env.Probe(px, rectG, 30, 20);
+            env.Check($"g15.ancestor gray recompiles ({ecG}->{s3.extractCount}) and desaturates in-stream {InstancedValidationEnv.Fmt(grayG)}",
+                s3.extractCount > ecG
+                && Mathf.Abs(grayG.r - grayG.g) <= 4 && Mathf.Abs(grayG.g - grayG.b) <= 4
+                && grayG.r >= 62 && grayG.r <= 90); //luma(red)=76
+            outerG.grayed = false;
+            env.Step(1);
+            px = env.Capture();
+            env.Check("g16.ancestor un-gray restores exact color",
+                InstancedValidationEnv.NearRGB(env.Probe(px, rectG, 30, 20), 255, 0, 0));
+
+            //--- corner gradient (g17-g18): the flatten regression ----------
+            //an instance carries one color — a 4-corner gradient used to
+            //flatten to one topology-dependent vertex; it must fall back
+            GGraph rectH = env.Rect(innerG, 100, 15, 60, 40, Color.white);
+            var rmH = rectH.shape.graphics.GetMeshFactory<RectMesh>();
+            rmH.colors = new Color32[]
+            {
+                new Color32(255, 0, 0, 255), new Color32(255, 0, 0, 255),
+                new Color32(0, 0, 255, 255), new Color32(0, 0, 255, 255),
+            };
+            rectH.shape.graphics.SetMeshDirty();
+            env.Step(2);
+            px = env.Capture();
+            NGraphics gH = InstancedValidationEnv.G(rectH);
+            var cNear = env.Probe(px, rectH, 12, 12);
+            var cFar = env.Probe(px, rectH, 48, 28);
+            int delta = Mathf.Abs(cNear.r - cFar.r) + Mathf.Abs(cNear.b - cFar.b);
+            env.Check($"g17.gradient rect falls back and still renders the gradient {InstancedValidationEnv.Fmt(cNear)}/{InstancedValidationEnv.Fmt(cFar)}",
+                !s3.IsClaimed(gH) && s3.lastSkippedPairs > 0 && delta > 80);
+            rmH.colors = null;
+            rectH.shape.graphics.SetMeshDirty();
+            env.Step(1);
+            px = env.Capture();
+            env.Check("g18.uniform colors re-admit via content push",
+                s3.IsClaimed(gH)
+                && InstancedValidationEnv.NearRGB(env.Probe(px, rectH, 30, 20), 255, 255, 255));
+
+            s3.Dispose();
+            s3 = null;
         }
         finally
         {
