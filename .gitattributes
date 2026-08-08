@@ -1,0 +1,8 @@
+# Freeze bytes as committed: no EOL conversion on checkout/checkin, ever.
+# This repo deliberately mixes styles — upstream files are CRLF (+BOM),
+# fork-added files are LF — and the instanced-renderer audit traced its
+# biggest merge-friction item to tooling silently flipping the old files
+# (8 core files were LF-flipped once; renormalized 2026-08-08). Tools that
+# rewrite whole files must preserve the file's existing style byte-for-byte
+# (AGENTS.md pitfall 12).
+* -text
