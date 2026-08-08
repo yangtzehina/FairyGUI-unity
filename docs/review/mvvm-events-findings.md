@@ -14,7 +14,7 @@
 | V6 | Flush 按缓存的 cnt 索引遍历 _groups：apply 回调中 Unbind（RemoveAt）导致跳组或 ArgumentOutOfRange；Clear 同理 | **已修（第 1 批）**：Flush/ApplyAll 迭代快照列表，Unbind/Clear 对组打 unbound 墓碑；回调中 Bind 的新组从下一次 Flush 生效（经核实 Bind 半边本就是良性的） |
 | U1 | BaseFont.textRebuildFlag 触发 Stage 整树双遍 Update，字体图集重建帧全树成本 ×2（上游原有行为，被认领叶放大浪费） | **已结（2026-08-01，实测推翻原描述）**：双遍走树只占重建帧的约 12%，"成本 ×2"不成立；真正的开销是图集重建本身。详见下方 §U1 |
 | E1 | 事件层——原定义已丢失，2026-08-01 重审后**重新定义为三条**（E1a/E1b/E1c，见 §E1） | **已修**：三条全部修复，E1a 是我们自己引入的回归 |
-| S2 / S5 | Source Generator——原定义已丢失，重审后**重新定义为九条**（见 §S2/S5） | **已修（第二批）**：九条全修，常驻行为门 `tools/FairyGUI.Mvvm.Generator.Tests`（18 项，对修前代码 16 红、修后 18 绿双向验证） |
+| S2 / S5 | Source Generator——原定义已丢失，重审后**重新定义为九条**（见 §S2/S5） | **已修（第二批）**：九条全修，常驻行为门 `tools/FairyGUI.Mvvm.Generator.Tests`（历史 18 项，对修前代码 16 红、修后 18 绿双向验证；2026-08-08 FuiView 生成器整体退役后余 11 项——4/5/6/7 条的载体已不存在，typed view 单源=烘焙 facade） |
 | V7 | Flush/ApplyAll 共用一个 `_flushScratch` 快照字段：apply 回调里再调 Flush/ApplyAll 会清空外层正在索引的缓冲 → `ArgumentOutOfRangeException`，且外层组的脏位已被消费，UI 永久失步 | **已修（本批）**：改为按嵌套深度租用快照 + **组级 `applying` 闸**（见 §V7 的事故记） |
 | V8 | 墓碑只在组**之间**生效：`Unbind`/`Clear` 拦不住正在 apply 的那一组，同组后续 entry 仍会写进已 Dispose 的视图——正是 `Unbind` 文档承诺的语义 | **已修（本批）**：entry 循环内逐条重测 `unbound` |
 | V9 | `BindList` 按值捕获集合实例，属性重新赋值后永远渲染旧集合 | **已修（第二批）**：主 API 改为取值委托 `Func<IReadOnlyList<T>>`；实例重载保留、降级为"仅就地变更"并借道委托版实现 |

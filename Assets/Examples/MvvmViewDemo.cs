@@ -1,16 +1,13 @@
 using FairyGUI;
 using FairyGUI.Mvvm;
 
-/// <summary>
-/// Strongly-typed view generated at compile time from the real VirtualList package
-/// (supplied to the compiler via Assets/csc.rsp -additionalfile). Child names and types
-/// come from the .fui itself: renaming a child in the FairyGUI editor breaks the build
-/// here instead of returning null at runtime. Republish + touch any script to refresh.
-/// </summary>
-[FuiView("VirtualList", "Main")]
-public partial class VirtualListMainView
-{
-}
+//Typed views come from ONE generator now: the bake-time facade
+//(FairyGUIEditor.FqsViewGenerator via Tools/FairyGUI/Bake Packages (FQS)) —
+//e.g. FairyGUI.Baked.VirtualList.MainView with typed m_ fields, page enums
+//and a construction-time BakedSourceHash staleness warning. The compile-time
+//Roslyn twin ([FuiView] + csc.rsp additionalfile) is retired: Unity never
+//re-ran the compiler when only the .fui bytes changed, so its "compile-time
+//guarantee" had a standing stale window the bake-time facade does not.
 
 public partial class MailBoxVM : ViewModel
 {

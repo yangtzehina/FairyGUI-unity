@@ -470,8 +470,11 @@ fairyBatching 宿主 eraser 赋序 + 相邻双作用域夹持中间 run + revers
 > **2026-07-30 已立项**：M8 烘焙线施工设计（混合形态、FQS1 热 blob 格式、序列化分层
 > 决策、六站里程碑与验收门）见 **docs/design/m8-bake-line.md**；本节保留原始分析。
 
-已有设施：MVVM 管线的 FuiViewGenerator 通过 csc.rsp additionalfile 读 .fui，
-FuiReader 解析组件树与图集 sprite 矩形——**布局结构与图集 UV 在编译期已知**。
+已有设施（历史；FuiViewGenerator 已于 2026-08-08 退役，typed view 单源=M8-3
+烘焙 facade——Roslyn 侧的"编译期保证"有 Unity 不因 .fui 变更而重编译的
+常驻窗口期，且按名解析违反 id 身份纪律）：MVVM 管线曾通过 csc.rsp
+additionalfile 读 .fui，FuiReader 解析组件树与图集 sprite 矩形——
+**布局结构与图集 UV 在编译期已知**，这条性质由烘焙线继承。
 
 ### 能：per-组件 quad 发射器（M8 候选）
 

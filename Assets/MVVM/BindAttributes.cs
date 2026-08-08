@@ -29,18 +29,4 @@ namespace FairyGUI.Mvvm
         }
     }
 
-    /// <summary>
-    /// Generates a strongly-typed view for a component inside a .fui package supplied to
-    /// the compiler as an AdditionalFile (Unity: csc.rsp /additionalfile:...). The
-    /// generator parses the package at compile time and emits one typed field per named
-    /// child plus Bind(GComponent) and Create(). Renaming a child in the FairyGUI editor
-    /// then becomes a compile error instead of a silent GetChild(null).
-    /// </summary>
-    [AttributeUsage(AttributeTargets.Class)]
-    public sealed class FuiViewAttribute : Attribute
-    {
-        public FuiViewAttribute(string packageName, string componentName)
-        {
-        }
-    }
 }

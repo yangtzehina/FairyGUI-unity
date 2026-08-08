@@ -310,6 +310,7 @@ c22 真正走一遍字节数组加载（bundle 形态）并断言**与 Resources
 
 | 日期 | 站 | 状态 | 验证 |
 |---|---|---|---|
+| 2026-08-08 | typed view 单源化 | ✅ | Roslyn FuiViewGenerator（+FuiReader、[FuiView] 属性、csc.rsp additionalfile 三件套）整体退役，M8-3 烘焙 facade 成为唯一 typed-view 生成器。理由：.fui 改动不触发 Unity 重编译的陈旧窗口在 Roslyn 侧无解（audit MED），按名解析违反 id 身份纪律（踩坑 19），DLL/源码漂移面消失一半；facade 侧已有 BakedSourceHash 构造期新鲜度门。生成器行为门 18→11 项（FuiView 载体消失），Observable/Bind 生成器不动。 |
 | 2026-08-08 | 拒绝规则跟进 | ✅ | 容器级作用域栅栏（v4 §9）让 GoWrapper 变得可计数：此前含 GoWrapper 的树在烘焙器眼里 runCount==1、masked==0，**静默烘出缺包装内容的 blob**；现在 GoWrapper 计入 scope 计数、按 "masked/painting/GoWrapper subtree(s)" 拒绝。附带：拒绝检查换序（scope 计数先于通用栅栏计数——scope 栅栏也关 run，不换序会把拒因误报成 "fallback barrier(s)"）。验收在 InstancedScopeBarrierSuite（26 项，双后端 616/616）与既有 M8-1 拒烘矩阵。 |
 | 2026-07-30 | 立项 | ✅ 本文档 | — |
 | 2026-07-30 | M8-1 | ✅ | 专项 15/15：逐位 quad 一致、字节级确定性、篡改/敌意计数干净拒绝、拒绝规则全套（根级 mask/文本对象存在即拒/movieclip/外部纹理默认拒/blend 栅栏）；真实包冒烟 Basics 5/28 组件烘出（全 Package TexRef + 源哈希），其余按精确理由拒绝。像素门随装载移至 M8-2。三代理对抗核查 1 blocker + 7 must-fix 全修：根级 mask 漏拒、Read 无前置校验（敌意计数 OOM）、LeafRecord 隐式尾 padding 显式化、烘焙后端未钉死（顶点路径 clip 粗化会冻进 blob）、External TexRef 会话态身份、图集冷热致文本拒绝不确定（改存在即拒）、菜单重名覆盖（改 ID 创建）、GRoot 缩放漂入 quad 低位（改无缩放 Stage 挂载）。 |

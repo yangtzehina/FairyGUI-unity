@@ -28,7 +28,8 @@ FairyGUI-unity 的现代化 fork（**开发在 `master` 上**，2026-08-01 起�
 - **Unity**：2022.3.62f3（Hub 安装，含 WebGL/iOS 模块）。`ProjectSettings/ProjectVersion.txt`
   必须保持 2022.3.62f3——见踩坑第 1 条。
 - **生成器行为门**：`~/.dotnet/dotnet run -c Release --project tools/FairyGUI.Mvvm.Generator.Tests`
-  ——用 CSharpGeneratorDriver 跑真实生成器 + 真实 Basics 包字节，18 项，判定行
+  ——用 CSharpGeneratorDriver 跑真实生成器，11 项（Observable+Bind；FuiView 双胞胎
+  2026-08-08 退役，typed view 单源=烘焙 facade），判定行
   `RESULT pass=N fail=N`。改 `tools/FairyGUI.Mvvm.Generator/` 必跑，且产物要
   `dotnet build -c Release` 后拷贝到 `Assets/RoslynAnalyzers/`（Unity 消费的是 DLL，
   不是源码——只改源码不同步 DLL，Unity 里什么都不会变）。
