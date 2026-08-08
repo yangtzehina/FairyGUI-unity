@@ -48,7 +48,7 @@ FairyGUI-unity 的现代化 fork（**开发在 `master` 上**，2026-08-01 起�
 2. `Tools/FairyGUI/Run FQS Parity` —— 常设对照门禁（枚举不抽样 + 像素/几何双层 + 篡改阶梯），
    结果写 `Temp/FqsParityResults.txt`，判定行 `FQS PARITY VERDICT: PASS|FAIL`。
 3. `FairyGUI/Instanced UI Streams` —— 流诊断面板（段/quads/槽/认领/重编译计数）。
-4. `Tools/FairyGUI/Run Validation Suites` —— 跑仓库内的 340 项行为/像素/不变量套件
+4. `Tools/FairyGUI/Run Validation Suites` —— 跑仓库内的 338 项行为/像素/不变量套件
    （需已在 Play 模式；无头形态见下）。
 5. `Tools/FairyGUI/Run Perf Gates` —— 墙钟比值门（需新鲜 Play 会话）。
 
@@ -71,7 +71,7 @@ CI 类入口（非菜单）：
   绿了才提交，提交信息里写验收数字。
 - **后端覆盖：两条都要跑**。历史上本机编辑器的 buffer 路径（顶点级 StructuredBuffer）
   静默不出图，所以套件默认 `forceVertexPath = true`。**2026-07-31 复测该怪癖不再复现**
-  （对照实验确认像素来自实例 draw），buffer 后端 227/227 全绿，双后端 454/454（批5b 并入后 282 项，双后端 564/564；作用域栅栏套件并入后 297 项，双后端 594/594；栅栏改绝对语义 + 对抗评审二轮回归并入后 308 项，双后端 616/616；曲线换字体回归 + 事件语义套件并入后 21 套 319 项，双后端 638/638；ColorFilter 认领缺口回归并入后 22 套 327 项，双后端 654/654；祖先 grayed/四角渐变/档位命名回归并入后 22 套 334 项，双后端 668/668；对抗评审三轮加固（盖章通道收窄/跨流迁移/FormatVersion 3/档位缓存键）并入后 22 套 340 项，双后端 680/680）。
+  （对照实验确认像素来自实例 draw），buffer 后端 227/227 全绿，双后端 454/454（批5b 并入后 282 项，双后端 564/564；作用域栅栏套件并入后 297 项，双后端 594/594；栅栏改绝对语义 + 对抗评审二轮回归并入后 308 项，双后端 616/616；曲线换字体回归 + 事件语义套件并入后 21 套 319 项，双后端 638/638；ColorFilter 认领缺口回归并入后 22 套 327 项，双后端 654/654；祖先 grayed/四角渐变/档位命名回归并入后 22 套 334 项，双后端 668/668；对抗评审三轮加固（盖章通道收窄/跨流迁移/FormatVersion 3/档位缓存键）并入后 22 套 340 项，双后端 680/680；MergedBatch 删除随行 22 套 338 项，双后端 676/676）。
   默认仍留顶点流（怪癖若复发验证照跑），但**验收应跑 `-ciBackend both`**：两条后端是
   同一语义的两套 shader + 上传实现，只跑一条等于覆盖了一半。切换用
   `InstancedValidationEnv.useVertexBackend` / `InstancedValidationAll.RunOn(bool)` /
@@ -88,8 +88,8 @@ CI 类入口（非菜单）：
 - **像素探针坐标**：`(逻辑坐标) × GRoot.contentScaleFactor` → 屏幕像素，y 翻转
   `RH-1-y`。验证前确认演示场景已打开（见踩坑第 3 条）。
 - **验证套件已全部固化进仓库**：`Assets/Examples/InstancedPoC/Validation/`
-  （22 套 340 项：M1 重组器 19、M3 裁剪栈 10、作用域栅栏 26、M7 SDF 17、M4 场景 19、
-  ColorFilter 认领 8、批1-4 23/8/19/10/12、批5 曲线文本 11、M8-1/2/4/5 15/19/20/14、
+  （22 套 338 项：M1 重组器 19、M3 裁剪栈 10、作用域栅栏 26、M7 SDF 17、M4 场景 19、
+  ColorFilter 认领 8、批1-4 21/8/19/10/12、批5 曲线文本 11、M8-1/2/4/5 15/19/20/14、
   自动挂载 27、超集 13、曲线效果 8、性能不变量 14、事件语义 10、MVVM 18）。
   跑法、harness 约定与坑见该目录 `README.md`；一条
   `eval "return InstancedValidationAll.Run();"` 跑完全部。
@@ -108,7 +108,7 @@ CI 类入口（非菜单）：
 - **烘焙器宁可少烘，不可错烘**：拒绝规则（文本/动画对象存在即拒、根 mask、
   非包纹理默认拒、blend 栅栏）不为覆盖率放松；blob 永远是可丢弃加速缓存，
   语义真源是 .fui。
-- **MergedBatch 已废弃**（`[Obsolete]` + 与实例流互斥），不再修它的 bug。
+- **MergedBatch 已删除**（2026-08-08；此前 `[Obsolete]`+互斥。558 行携 15 条确认缺陷的死代码不该跟着 player 出包，A/B 数字早已落档 v4 设计书 §1.2）。
 
 ## 踩坑（每条都真实炸过，多数炸过不止一次）
 

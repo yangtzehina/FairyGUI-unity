@@ -3,11 +3,11 @@ using FairyGUI;
 using UnityEngine;
 
 /// <summary>
-/// Review batch-1 correctness suite (23 checks), rebuilt from commit 593d583's
+/// Review batch-1 correctness suite (21 checks), rebuilt from commit 593d583's
 /// Validation record: non-Normal blendMode leaves stay native and act as sort
 /// barriers (recompile on change, both directions), grayed accumulates down the
-/// subtree and desaturates baked instances, and the MergedBatch / duplicate
-/// stream mutual exclusion. The MVVM half of batch 1 lives in
+/// subtree and desaturates baked instances, and the duplicate-stream mutual
+/// exclusion (the MergedBatch half retired with MergedBatch itself). The MVVM half of batch 1 lives in
 /// BinderReentrancyCheck (11 checks). Returns a "RESULT pass=N fail=N" report.
 /// </summary>
 public static class InstancedBatch1Suite
@@ -106,7 +106,7 @@ public static class InstancedBatch1Suite
                 && InstancedValidationEnv.NearRGB(env.Probe(px, rectD, 30, 20), 255, 0, 255));
             env.Check("g10.grayed leaves stayed claimed throughout", claimedDuringGray);
 
-            //--- MergedBatch / duplicate-stream mutex (m11-m14) -------------
+            //--- duplicate-stream mutex + teardown (m11, m14) ---------------
             int claimedBefore = stream.claimedLeafCount;
             bool prevLog = Debug.unityLogger.logEnabled;
             Debug.unityLogger.logEnabled = false; //the mutex paths LogError by design
@@ -118,23 +118,10 @@ public static class InstancedBatch1Suite
                 && stream.claimedLeafCount == 0 && s2.claimedLeafCount == claimedBefore
                 && s2.IsClaimed(gR));
 
-#pragma warning disable 618
-            Debug.unityLogger.logEnabled = false;
-            InstancedValidationEnv.C(root).mergedBatching = true;
-            Debug.unityLogger.logEnabled = prevLog;
-            env.Check("m12.mergedBatching refused on a stream container",
-                !InstancedValidationEnv.C(root).mergedBatching);
-
-            InstancedValidationEnv.C(comp2).mergedBatching = true;
-            bool mergedWasOn = InstancedValidationEnv.C(comp2).mergedBatching;
-            Debug.unityLogger.logEnabled = false;
+            //(m12/m13 tested the MergedBatch mutex; MergedBatch is deleted —
+            //the duplicate-stream half of the mutex lives on in m11)
             s3 = new InstancedUIStream(InstancedValidationEnv.C(comp2), default, true, true);
-            Debug.unityLogger.logEnabled = prevLog;
             env.Step(1);
-            env.Check("m13.new stream force-disables mergedBatching",
-                mergedWasOn && !InstancedValidationEnv.C(comp2).mergedBatching
-                && s3.IsClaimed(gF));
-#pragma warning restore 618
 
             s3.Dispose();
             s3 = null;

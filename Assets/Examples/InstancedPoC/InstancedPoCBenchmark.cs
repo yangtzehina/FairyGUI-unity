@@ -6,10 +6,10 @@ using UnityEngine;
 using Unity.Profiling;
 
 /// <summary>
-/// Measures the v4 M1 InstancedUIStream against the same phases as MergedBatchBenchmark:
+/// Measures the v4 M1 InstancedUIStream against the same phases the retired MergedBatch benchmark used:
 /// idle (no updates), scroll (one uniform write per frame), and textchurn (partial
 /// instance-buffer upload per frame). Marker medians land in JSON alongside the
-/// engine counters so the numbers line up with the earlier MergedBatch runs.
+/// engine counters so the numbers line up with the archived MergedBatch runs (design doc §1.2).
 /// Drive the FairyGUI TextField externally? No — this benchmark mutates the same
 /// TextField the merged benchmark used, then mirrors it into the instance buffer.
 /// </summary>

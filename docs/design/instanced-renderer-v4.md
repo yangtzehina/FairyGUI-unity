@@ -92,9 +92,9 @@ DisplayObject 树（不动）
 └────────────────────────────────────────────────────────┘
 ```
 
-挂接点与 MergedBatch 相同：`Container.SetRenderingOrderAll` 之后（复用
+挂接点与 MergedBatch（已于 2026-08-08 删除，历史对照数字见 §1.2）相同：`Container.SetRenderingOrderAll` 之后（复用
 `_batchElements` 排序结果），开关为 `Container.instancedRendering`（与
-`mergedBatching` 互斥，后者进入废弃期）。
+`mergedBatching` 互斥，后者已走完废弃期并删除）。
 
 **已产品化（批 4，2026-07-25）**：`Container.instancedRendering` / `GComponent.instancedRendering`
 （组件级取 clip owner 为流根，滚动窗口成为外窗口、内容滚动走 transform 槽）；Stage 在每帧

@@ -82,8 +82,7 @@ namespace FairyGUI
         /// updates flow through the push channels (content/transform/visible/
         /// structure), with interior movement promoted to transform slots.
         /// Fully automatic: the Stage drives all streams each frame and the
-        /// stream disposes with the container. Mutually exclusive with the
-        /// deprecated mergedBatching (enabling this disables that).
+        /// stream disposes with the container.
         /// </summary>
         public bool instancedRendering
         {
@@ -103,7 +102,6 @@ namespace FairyGUI
         }
         Rect? _clipRect;
         List<BatchElement> _batchElements;
-        MergedBatch _mergedBatch;
 
         internal int _panelOrder;
         internal DisplayObject _lastFocus;
@@ -737,42 +735,6 @@ namespace FairyGUI
             }
         }
 
-        /// <summary>
-        /// Experimental. In addition to fairyBatching's sortingOrder arrangement, bake the
-        /// meshes of children sharing a material into combined meshes, so this container
-        /// costs one draw call per material run instead of one per element. See MergedBatch
-        /// for the rebuild triggers and the elements that keep their own renderer.
-        /// </summary>
-        [System.Obsolete("MergedBatch is deprecated: the multi-agent review confirmed 15 defects (7 structural invalidation gaps). Use InstancedUIStream (v4) instead; see docs/review/.")]
-        public bool mergedBatching
-        {
-            get { return _mergedBatch != null; }
-            set
-            {
-                if (value != (_mergedBatch != null))
-                {
-                    if (value)
-                    {
-                        //mutual exclusion: both mechanisms fight over the same leaf
-                        //renderers via forceRenderingOff (double-render otherwise)
-                        if (_instancedStream != null)
-                        {
-                            UnityEngine.Debug.LogError("mergedBatching cannot be enabled: this container is rendered by an InstancedUIStream.");
-                            return;
-                        }
-                        _mergedBatch = new MergedBatch(this);
-                        fairyBatching = true;
-                    }
-                    else
-                    {
-                        _mergedBatch.Dispose();
-                        _mergedBatch = null;
-                    }
-                    InvalidateBatchingState(true);
-                }
-            }
-        }
-
         internal void UpdateBatchingFlags()
         {
             bool oldValue = (_flags & Flags.BatchingRoot) != 0;
@@ -972,16 +934,11 @@ namespace FairyGUI
                     _mask.graphics._SetStencilEraserOrder(context.renderingOrder++);
             }
 
-            if (_mergedBatch != null)
-                _mergedBatch.Sync(context, _batchElements);
         }
 
         private void DoFairyBatching()
         {
             _flags &= ~Flags.BatchingRequested;
-
-            if (_mergedBatch != null)
-                _mergedBatch.SetStructureDirty();
 
             if (_batchElements == null)
                 _batchElements = new List<BatchElement>();
@@ -1086,12 +1043,6 @@ namespace FairyGUI
         {
             if ((_flags & Flags.Disposed) != 0)
                 return;
-
-            if (_mergedBatch != null)
-            {
-                _mergedBatch.Dispose();
-                _mergedBatch = null;
-            }
 
             if (_instancedStream != null)
             {

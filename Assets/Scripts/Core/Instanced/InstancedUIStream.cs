@@ -790,20 +790,13 @@ namespace FairyGUI
             if (inPlace)
             {
                 //mutual exclusion (review batch 1): one in-place stream per
-                //container, and never on top of the deprecated MergedBatch —
-                //both toggle the same forceRenderingOff flags on the leaves
+                //container — both would toggle the same forceRenderingOff
+                //flags on the leaves
                 if (container._instancedStream != null)
                 {
                     Debug.LogError("InstancedUIStream: container already has an in-place stream; disposing the old one.");
                     container._instancedStream.Dispose();
                 }
-#pragma warning disable 618
-                if (container.mergedBatching)
-                {
-                    Debug.LogError("InstancedUIStream: container has mergedBatching enabled (deprecated); disabling it.");
-                    container.mergedBatching = false;
-                }
-#pragma warning restore 618
                 liveInPlaceCount++;
                 container._instancedStream = this;
                 sLiveStreams.Add(this);

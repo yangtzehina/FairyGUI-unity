@@ -94,8 +94,8 @@ namespace FairyGUI
         MaterialManager _matRefOwner;
         int _matRefFlags;
 
-        //incremented whenever the mesh content is mutated (rebuild/alpha/tint),
-        //so a MergedBatch can detect changes with a managed int compare
+        //incremented whenever the mesh content is mutated (rebuild/alpha/tint):
+        //consumers detect changes with a managed int compare
         internal int _contentVersion;
 
         //the instanced stream currently rendering this leaf in place of the native

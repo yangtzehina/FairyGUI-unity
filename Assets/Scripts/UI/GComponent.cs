@@ -127,23 +127,6 @@ namespace FairyGUI
         }
 
         /// <summary>
-        /// Experimental. Bake children sharing a material into combined meshes
-        /// (one draw call per material run). Implies fairyBatching.
-        /// Applied to the container that actually owns the content: clipping and masks
-        /// make a container its own batching fence, so for scrolling/overflow-hidden
-        /// components the switch must sit on the clip container, not the root -
-        /// this property finds that container automatically.
-        /// </summary>
-        [System.Obsolete("MergedBatch is deprecated; use InstancedUIStream (v4). See docs/review/.")]
-        public bool mergedBatching
-        {
-#pragma warning disable 618
-            get { return GetMergedBatchingTarget().mergedBatching; }
-            set { GetMergedBatchingTarget().mergedBatching = value; }
-#pragma warning restore 618
-        }
-
-        /// <summary>
         /// v4 instanced rendering switch for this component (see
         /// Container.instancedRendering). Targets the same container the
         /// batching switches do: the clip owner when one exists (a scroll
@@ -152,11 +135,14 @@ namespace FairyGUI
         /// </summary>
         public bool instancedRendering
         {
-            get { return GetMergedBatchingTarget().instancedRendering; }
-            set { GetMergedBatchingTarget().instancedRendering = value; }
+            get { return GetBatchingTarget().instancedRendering; }
+            set { GetBatchingTarget().instancedRendering = value; }
         }
 
-        Container GetMergedBatchingTarget()
+        //clipping and masks make a container its own batching fence, so for
+        //scrolling/overflow-hidden components the switch must sit on the clip
+        //container, not the root — this finds that container
+        Container GetBatchingTarget()
         {
             Container t = container;
             while (t != null && t != rootContainer)
