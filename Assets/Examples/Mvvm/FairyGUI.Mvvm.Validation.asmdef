@@ -1,14 +1,11 @@
 {
-    "name": "FairyGUI-Editor",
+    "name": "FairyGUI.Mvvm.Validation",
     "rootNamespace": "",
     "references": [
         "FairyGUI",
-        "FairyGUI.Validation",
-        "UnityEditor.TestRunner"
+        "FairyGUI.Mvvm"
     ],
-    "includePlatforms": [
-        "Editor"
-    ],
+    "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,

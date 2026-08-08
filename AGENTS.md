@@ -49,7 +49,11 @@ FairyGUI-unity 的现代化 fork（**开发在 `master` 上**，2026-08-01 起�
    结果写 `Temp/FqsParityResults.txt`，判定行 `FQS PARITY VERDICT: PASS|FAIL`。
 3. `FairyGUI/Instanced UI Streams` —— 流诊断面板（段/quads/槽/认领/重编译计数）。
 4. `Tools/FairyGUI/Run Validation Suites` —— 跑仓库内的 338 项行为/像素/不变量套件
-   （需已在 Play 模式；无头形态见下）。
+   （需已在 Play 模式；无头形态见下）。**UTF 形态**：`Tools/FairyGUI/Run Validation
+   Suites (UTF)`（或 `FairyGUIEditor.ValidationTestRunnerCI.Run()`）在 Test Runner 上
+   跑同一批套件（22 套 × 双后端 = 44 项），报告 `Logs/UtfValidationResults.txt`，
+   判定行 `UTF VALIDATION VERDICT`；标准 CI 用 `-runTests -testPlatform PlayMode`
+   （不加 -nographics），不再依赖 unicli。
 5. `Tools/FairyGUI/Run Perf Gates` —— 墙钟比值门（需新鲜 Play 会话）。
 
 CI 类入口（非菜单）：

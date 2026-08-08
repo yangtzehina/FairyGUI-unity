@@ -6,6 +6,27 @@ v4 实例流渲染器（`Assets/Scripts/Core/Instanced/`）的行为回归套件
 
 ## 跑法
 
+**标准跑法（Unity Test Framework，任何环境）**：套件已挂进 UTF PlayMode——
+`Assets/Tests/Validation/ValidationSuiteTests.cs` 给每套一个测试、按后端双
+fixture 实例化（22 套 × 2 = 44 项，包着与下述全量相同的检查）。三个入口：
+
+- Test Runner 窗口（PlayMode 页签）；
+- 无编辑器 CI：`Unity -batchmode -projectPath . -runTests -testPlatform PlayMode -testResults Logs/utf-results.xml`
+  （**不要 -nographics**，像素探针要读回渲染）；
+- 编辑器内一键：菜单 `Tools/FairyGUI/Run Validation Suites (UTF)` 或
+  `FairyGUIEditor.ValidationTestRunnerCI.Run()`——报告写
+  `Logs/UtfValidationResults.txt`，判定行 `UTF VALIDATION VERDICT: PASS|FAIL pass=N fail=M`，
+  文件出现即完成（驱动方以此轮询）。门可红已做过篡改验证（故意失败的探针
+  测试把 FAIL 与断言消息一路带进报告）。
+
+程序集拓扑（迁移的实质）：套件从 Assembly-CSharp 搬进 `FairyGUI.Validation`
+asmdef（BinderReentrancyCheck 进 `FairyGUI.Mvvm.Validation`），测试程序集
+`FairyGUI.Validation.Tests` 只在 UNITY_INCLUDE_TESTS 下编译、不进 player。
+注意：UTF 按字母序跑，**套件必须保持相互独立**（各自建 env、finally 清理）；
+带顺序语义的全量回归仍走下面的 eval 入口。
+
+**有序全量（unicli eval）**：
+
 ```
 UNICLI_PROJECT=/Users/ai/ECS/FairyGUI-unity
 unicli exec Scene.Open '{"path":"Assets/Examples/InstancedPoC/Validation/ValidationScene.unity"}'
