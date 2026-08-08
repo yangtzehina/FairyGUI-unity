@@ -35,7 +35,7 @@ InstancedValidationAll.RunBothBackends()
 buffer 路径正常,且以对照实验坐实像素来自实例 draw(关段渲染器像素消失、开回来复现,
 而叶子 `forceRenderingOff=true`,原生渲染器不参与)。全套 227 项在 buffer 后端一次
 全绿,双后端合计 **454/454**（批5b 并入后 19 套 282 项/双后端 **564/564** 复验全绿；
-作用域栅栏套件并入后 20 套 297 项/双后端 **594/594**；栅栏改绝对语义（无限盒）+ 对抗评审二轮回归并入后 20 套 308 项/双后端 **616/616**；ColorFilter 认领缺口套件并入后 21 套 316 项/双后端 **632/632**，2026-08-08 实测）。
+作用域栅栏套件并入后 20 套 297 项/双后端 **594/594**；栅栏改绝对语义（无限盒）+ 对抗评审二轮回归并入后 20 套 308 项/双后端 **616/616**；曲线换字体回归 + 事件语义套件并入后 21 套 319 项/双后端 **638/638**；ColorFilter 认领缺口套件并入后 22 套 327 项/双后端 **654/654**，2026-08-08 实测）。
 
 **当初的触发条件未查明**,所以默认仍是顶点流(怪癖若复发,验证照样跑得起来);
 但正式验收请跑 `-ciBackend both`。
@@ -53,7 +53,7 @@ Unity -batchmode -projectPath . \
 有失败 1）。日志与报告首行是可 grep 的判定行：
 
 ```
-INSTANCED VALIDATION VERDICT: PASS pass=316 fail=0
+INSTANCED VALIDATION VERDICT: PASS pass=327 fail=0
 ```
 
 harness 注意事项（都踩过）：
@@ -82,7 +82,7 @@ harness 注意事项（都踩过）：
 | `InstancedBatch3Suite` | 19 | 颜色 tier c1-c6、transform 槽 t1-t10（含槽内 clip 跟随、溢出探针、嵌套槽）、Extract 增量化 e1-e3 |
 | `InstancedBatch3dSuite` | 10 | 跨图集段键：合段、6 纹理 4+2 裂段、逐槽像素精确、churn 保槽位、grayed 共存 |
 | `InstancedBatch4Suite` | 12 | 产品化：`instancedRendering` 开关、Stage 自动驱动与原生像素等价、内层移动/滚动走槽、开关往返、dispose 拆除 |
-| `InstancedBatch5Suite` | 10 | 曲线文本：CurveBaseFont 注册与 shader 接线、side table、UBB 分段色、下划线实心 quad、字形 slack、顶点路径认领与实例字形像素 |
+| `InstancedBatch5Suite` | 11 | 曲线文本：CurveBaseFont 注册与 shader 接线、side table、UBB 分段色、下划线实心 quad、字形 slack、顶点路径认领与实例字形像素、**换字体清侧表**（陈旧字形回归：Clear 移入 UpdateMeshNow） |
 | `InstancedM81Suite` | 15 | M8-1 烘焙线：FQS1 blob 往返与逐位 quad 等价、字节级可重现、敌意输入拒绝、拒烘矩阵（text/MovieClip 存在性、root 遮罩、回退屏障、被遮罩子树、非包纹理）、SDF 标记 |
 | `InstancedM82Suite` | 19 | M8-2 mount 融合：陈旧/篡改/敌意计数拒挂、拼接、**像素闸门 diff=0**、mount 走槽、烘焙叶上的内容/颜色 tier、同帧自愈、失效阶梯与回退 |
 | `InstancedM84Suite` | 20 | M8-4 分层：可见性 g1-g16（叶/容器隐显零重编译、隐藏态跨重拼接存活、blob 外内容显示优雅失效）、内层变换 tier、t1-t4 六状态过场像素全等且零重编译 |
@@ -91,6 +91,7 @@ harness 注意事项（都踩过）：
 | `FqsSupersetSuite` | 13 | M8-7 超集烘焙：隐藏页进 blob（2→4 叶）、字节级重烘一致（还原纯度）、**首次显示零重编译**、六连翻页零重编译 + 逐状态像素全等、**命中测试三件套**（当前页可点/隐藏页不可点/翻页互换）、超集关闭时优雅降级 |
 | `CurveEffectsSuite` | 8 | 批5b 曲线字体效果：假粗体加宽（uv 位）、描边环成色/干净关闭（property block 复位）、阴影方向、组合、**跨带接缝双向注入证明**（'三'+10px 描边：故障 ringed=0）、实例流 barrier/认领分流 + 接管像素 |
 | `InstancedPerfInvariantSuite` | 14 | **性能不变量(确定性)**：各 tier 零重编译(槽/滚动/颜色/文本 slack/挂载移动/挂载内隐显)、三纹理合 1 段、段 GO 池化、idle Render 零分配、40 个 renderless 叶零渲染器、加叶不加段、**顶点上传宽度 72B/顶点**（声明值/布局求和/结构体 marshal 三者一致——字段被悄悄加宽时像素门全绿也会被抓到） |
+| `EventSemanticsSuite` | 10 | 事件层语义（e96f994 的 7 项断言落盘 + 3 项扩展）：双 Add 去重、派发中增/删走快照（只影响下一轮）、capture→target→bubble 次序、嵌套异型/同型派发不腐蚀外层快照、isDispatching 计数器语义（嵌套后外层仍 true）、派发中 RemoveEventListeners、context data/sender、未知类型查询安静。E1a 类回归的常设门 |
 | `BinderReentrancyCheck` | 18 | MVVM Binder 重入（在 `Assets/Examples/Mvvm/`，由 `InstancedValidationAll` 一并调用） |
 
 **性能门分两层。** 上表最后一套是**第一层:确定性不变量**——把速度承诺里不含时间的部分
@@ -113,7 +114,7 @@ Unity -batchmode -projectPath . \
 ```
 
 判定行 `INSTANCED PERF VERDICT: PASS|FAIL pass=N fail=M`,退出码随结果。
-**必须单独一个 Unity 进程跑**,不能接在 316 项行为套件后面——那 316 项自己就会留下
+**必须单独一个 Unity 进程跑**,不能接在 327 项行为套件后面——那 327 项自己就会留下
 GC/驱动债,而 batchmode 冷启动天然就是"新鲜会话"。
 
 方法学(针对 M8-5 那次「45% 被读成 18%」的事故):

@@ -115,6 +115,7 @@ public static class InstancedValidationAll
         RunSuite("m8_superset", FqsSupersetSuite.Run);
         RunSuite("curve_effects", CurveEffectsSuite.Run);
         RunSuite("perf_invariants", InstancedPerfInvariantSuite.Run);
+        RunSuite("event_semantics", EventSemanticsSuite.Run);
         RunSuite("mvvm_reentrancy", BinderReentrancyCheck.Run);
 
         sb.Insert(0, $"ALL RESULT pass={pass} fail={fail}\n\n");

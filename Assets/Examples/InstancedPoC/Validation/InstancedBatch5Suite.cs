@@ -6,7 +6,7 @@ using FairyGUI;
 using UnityEngine;
 
 /// <summary>
-/// Batch 5 curve-text suite (10 checks), rebuilt from commits dd9f335
+/// Batch 5 curve-text suite (11 checks), rebuilt from commits dd9f335
 /// (CurveBaseFont: registration + shader wiring, the NGraphics side table, UBB
 /// per-run color reaching the stream, the underline solid quad, glyph slack)
 /// and 6a42c0f (curve data textures: the vertex-stream backend CLAIMS curve
@@ -213,6 +213,20 @@ public static class InstancedBatch5Suite
                 !gT.meshRenderer.forceRenderingOff
                 && env.AnyBright(px, tf, 2, 2, 200, 55)
                 && !env.AllNear(px, tf, 2, 2, 200, 55, new Color32(255, 255, 255, 255), 40));
+
+            //--- v11: switching AWAY from the curve font clears the side ----
+            //table (stale-glyph regression: the clear used to live only in
+            //CurveBaseFont.StartDraw, so a Dynamic/BitmapFont rebuild left the
+            //old text's glyphs for the stream to keep emitting)
+            IList staleTable = SideTable(gT);
+            bool hadGlyphs = staleTable != null && staleTable.Count > 0;
+            fmt = tf.textFormat;
+            fmt.font = ""; //back to the default dynamic font
+            tf.textFormat = fmt;
+            env.Step(2);
+            staleTable = SideTable(gT);
+            env.Check($"v11.font switch away from curve clears the side table (had={hadGlyphs} now={(staleTable != null ? staleTable.Count : 0)})",
+                hadGlyphs && (staleTable == null || staleTable.Count == 0));
         }
         finally
         {

@@ -5,6 +5,7 @@ namespace FairyGUI.Baked.Basics
     public partial class Demo_Drag_DropView
     {
         public readonly global::FairyGUI.GComponent com;
+        public const ulong BakedSourceHash = 0x668D00CB44B58CDDUL;
 
         public readonly global::FairyGUI.GButton m_a;
         public readonly global::FairyGUI.GButton m_b;
@@ -18,6 +19,9 @@ namespace FairyGUI.Baked.Basics
         public Demo_Drag_DropView(global::FairyGUI.GComponent c)
         {
             com = c;
+            var __pi = c.packageItem;
+            if (__pi != null && __pi.owner != null && __pi.owner.sourceHash != BakedSourceHash)
+                global::UnityEngine.Debug.LogWarning("FQS view Demo_Drag_DropView is stale: package 'Basics' changed since generation — child indices/types may be wrong. Re-bake via Tools/FairyGUI/Bake Packages (FQS).");
             m_a = (global::FairyGUI.GButton)c.GetChildAt(0);
             m_b = (global::FairyGUI.GButton)c.GetChildAt(1);
             m_c = (global::FairyGUI.GButton)c.GetChildAt(2);
