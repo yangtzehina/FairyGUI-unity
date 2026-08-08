@@ -505,6 +505,28 @@ namespace FairyGUI
             }
         }
 
+        //instanced stream: keyword-driven effects (COLOR_FILTER on Image/
+        //MovieClip, TMP outline/underlay) and custom materials live on the
+        //native material, which an instanced quad cannot carry — ExtractLeaf
+        //must leave such leaves native. ToggleKeyword(off) nulls the slot
+        //without shrinking the array, so scan for a surviving entry instead
+        //of testing the array reference.
+        internal bool _hasKeywordOrCustomMaterial
+        {
+            get
+            {
+                if (_customMatarial != 0)
+                    return true;
+                if (_shaderKeywords != null)
+                {
+                    for (int i = 0; i < _shaderKeywords.Length; i++)
+                        if (_shaderKeywords[i] != null)
+                            return true;
+                }
+                return false;
+            }
+        }
+
         void UpdateManager()
         {
             if (_texture != null)

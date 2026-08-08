@@ -1648,6 +1648,25 @@ namespace FairyGUI
                 return;
             }
 
+            //shader keywords (COLOR_FILTER on Image/MovieClip, TMP effects) and
+            //custom materials live on the native material/property block, which
+            //an instanced quad cannot carry — same native-renderer barrier as
+            //blend (ColorFilter audit; the filter pokes the structure channel
+            //so an already-claimed leaf gets released on the next extract)
+            if (graphics._hasKeywordOrCustomMaterial)
+            {
+                p.stageCount = 0;
+                p.instanceable = false;
+                _entries.Add(new AdjacencyEntry
+                {
+                    key = null,
+                    x0 = bmin.x, y0 = bmin.y, x1 = bmax.x, y1 = bmax.y,
+                    payload = _pending.Count
+                });
+                _pending.Add(p);
+                return;
+            }
+
             //M9b/batch 5: curve-text leaves (standalone CurveTextMesh or a
             //TextField on a CurveBaseFont) emit one analytic glyph quad per
             //character. Where the stream cannot express them — vertex-stream
