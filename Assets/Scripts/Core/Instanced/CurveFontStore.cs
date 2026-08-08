@@ -48,7 +48,6 @@ namespace FairyGUI
         //  glyphs:  1 texel per glyph   — banding bbox
         const int TexW = 1024;
         static Texture2D sPtsTex, sBandsTex, sBandIdxTex, sGlyphTex;
-        static float[] sTexScratch;
         static bool sDirty;
 
         /// <summary>Bumps whenever the GPU buffers are recreated.</summary>
@@ -68,7 +67,30 @@ namespace FairyGUI
             sBandIdx.Clear();
             sGlyphMeta.Clear();
             sDirty = true;
-            ParseHeader();
+            sUpCurves = sUpBands = sUpIdx = sUpGlyphs = 0;
+            try
+            {
+                ParseHeader();
+            }
+            catch
+            {
+                //a half-parsed font must not read as loaded: HasChar and
+                //every consumer key off sFontData
+                sFontData = null;
+                sFontPath = null;
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Pure cmap probe: does this font map the character? No baking, no
+        /// allocation — TextField font-fallback probes through this, and the
+        /// old constant-true answer suppressed fallback for every missing
+        /// character (audit: rendered .notdef or nothing).
+        /// </summary>
+        public static bool HasChar(char ch)
+        {
+            return sFontData != null && GlyphId(ch) != 0;
         }
 
         public static GlyphInfo GetGlyph(char ch)
@@ -87,35 +109,83 @@ namespace FairyGUI
             EnsureBuffers();
         }
 
-        static Texture2D EnsureTex(ref Texture2D tex, int texels)
+        //incremental upload state (audit: every new glyph re-filled and
+        //re-uploaded all four tables — O(n^2) accumulated upload, a 3-4MB
+        //frame spike once thousands of CJK glyphs were live). The tables are
+        //append-only (LoadFont resets everything), so each EnsureBuffers is
+        //either "tail entries appended" (region copy of the touched rows) or
+        //"texture grew" (full upload, amortized by doubling growth).
+        static int sUpCurves, sUpBands, sUpIdx, sUpGlyphs;
+        static float[] sPtsData, sBandsData, sIdxData, sGlyphData;
+        static Texture2D sStagingTex;
+        static int sCanRegionCopy = -1;
+
+        static bool CanRegionCopy
+        {
+            get
+            {
+                if (sCanRegionCopy < 0)
+                    sCanRegionCopy = (SystemInfo.copyTextureSupport
+                        & UnityEngine.Rendering.CopyTextureSupport.Basic) != 0 ? 1 : 0;
+                return sCanRegionCopy == 1;
+            }
+        }
+
+        /// <summary>
+        /// Texture + CPU mirror sized for texels, height grown by doubling so
+        /// full re-uploads amortize to O(log n). True = recreated (caller must
+        /// refill from 0 and full-upload).
+        /// </summary>
+        static bool EnsureTexAndData(ref Texture2D tex, ref float[] data, int texels)
         {
             int h = Mathf.Max(1, (texels + TexW - 1) / TexW);
-            if (tex == null || tex.height < h)
+            bool recreate = tex == null || tex.height < h;
+            if (recreate)
             {
                 if (tex != null)
                     UnityEngine.Object.Destroy(tex);
+                h = Mathf.NextPowerOfTwo(h);
                 tex = new Texture2D(TexW, h, TextureFormat.RGBAFloat, false, true);
                 tex.name = "CurveFontTable";
                 tex.hideFlags = HideFlags.DontSave;
                 tex.filterMode = FilterMode.Point;
                 tex.wrapMode = TextureWrapMode.Clamp;
+                data = new float[TexW * h * 4];
             }
-            return tex;
+            return recreate;
         }
 
-        static float[] Scratch(Texture2D tex)
+        /// <summary>
+        /// Ships [fromTexel, toTexel) to the GPU: whole texture when it was
+        /// recreated (or the device cannot CopyTexture), else only the touched
+        /// rows via a staging texture region copy.
+        /// </summary>
+        static void Push(Texture2D tex, float[] data, bool full, int fromTexel, int toTexel)
         {
-            int n = tex.width * tex.height * 4;
-            if (sTexScratch == null || sTexScratch.Length < n)
-                sTexScratch = new float[n];
-            System.Array.Clear(sTexScratch, 0, n);
-            return sTexScratch;
-        }
-
-        static void Upload(Texture2D tex, float[] data)
-        {
-            tex.SetPixelData(data, 0);
-            tex.Apply(false, false);
+            if (toTexel <= fromTexel && !full)
+                return;
+            if (full || !CanRegionCopy)
+            {
+                tex.SetPixelData(data, 0);
+                tex.Apply(false, false);
+                return;
+            }
+            int r0 = fromTexel / TexW;
+            int rows = (toTexel - 1) / TexW - r0 + 1;
+            if (sStagingTex == null || sStagingTex.height < rows)
+            {
+                if (sStagingTex != null)
+                    UnityEngine.Object.Destroy(sStagingTex);
+                sStagingTex = new Texture2D(TexW, Mathf.NextPowerOfTwo(rows), TextureFormat.RGBAFloat, false, true);
+                sStagingTex.name = "CurveFontStaging";
+                sStagingTex.hideFlags = HideFlags.DontSave;
+            }
+            //SetPixelData reads staging-texture-sized elements from data at the
+            //row offset — no intermediate scratch; rows beyond our range carry
+            //garbage in staging but only [0, rows) is region-copied out
+            sStagingTex.SetPixelData(data, 0, r0 * TexW * 4);
+            sStagingTex.Apply(false, false);
+            Graphics.CopyTexture(sStagingTex, 0, 0, 0, 0, TexW, rows, tex, 0, 0, 0, r0);
         }
 
         /// <summary>(Re)builds the data textures when new glyphs were baked.</summary>
@@ -126,40 +196,46 @@ namespace FairyGUI
             sDirty = false;
 
             int nCurves = sPts.Count / 3;
-            var tex = EnsureTex(ref sPtsTex, Mathf.Max(nCurves * 2, 1));
-            float[] d = Scratch(tex);
-            for (int c = 0; c < nCurves; c++)
+            bool full = EnsureTexAndData(ref sPtsTex, ref sPtsData, Mathf.Max(nCurves * 2, 1));
+            int from = full ? 0 : sUpCurves;
+            for (int c = from; c < nCurves; c++)
             {
                 int b = c * 8;
-                d[b + 0] = sPts[c * 3].x;     d[b + 1] = sPts[c * 3].y;
-                d[b + 2] = sPts[c * 3 + 1].x; d[b + 3] = sPts[c * 3 + 1].y;
-                d[b + 4] = sPts[c * 3 + 2].x; d[b + 5] = sPts[c * 3 + 2].y;
+                sPtsData[b + 0] = sPts[c * 3].x;     sPtsData[b + 1] = sPts[c * 3].y;
+                sPtsData[b + 2] = sPts[c * 3 + 1].x; sPtsData[b + 3] = sPts[c * 3 + 1].y;
+                sPtsData[b + 4] = sPts[c * 3 + 2].x; sPtsData[b + 5] = sPts[c * 3 + 2].y;
             }
-            Upload(tex, d);
+            Push(sPtsTex, sPtsData, full, from * 2, nCurves * 2);
+            sUpCurves = nCurves;
 
-            tex = EnsureTex(ref sBandsTex, Mathf.Max(sBands.Count, 1));
-            d = Scratch(tex);
-            for (int i = 0; i < sBands.Count; i++)
+            full = EnsureTexAndData(ref sBandsTex, ref sBandsData, Mathf.Max(sBands.Count, 1));
+            from = full ? 0 : sUpBands;
+            for (int i = from; i < sBands.Count; i++)
             {
-                d[i * 4] = sBands[i].x;
-                d[i * 4 + 1] = sBands[i].y;
+                sBandsData[i * 4] = sBands[i].x;
+                sBandsData[i * 4 + 1] = sBands[i].y;
             }
-            Upload(tex, d);
+            Push(sBandsTex, sBandsData, full, from, sBands.Count);
+            sUpBands = sBands.Count;
 
-            tex = EnsureTex(ref sBandIdxTex, Mathf.Max((sBandIdx.Count + 3) / 4, 1));
-            d = Scratch(tex);
-            for (int i = 0; i < sBandIdx.Count; i++)
-                d[i] = sBandIdx[i];
-            Upload(tex, d);
+            full = EnsureTexAndData(ref sBandIdxTex, ref sIdxData, Mathf.Max((sBandIdx.Count + 3) / 4, 1));
+            //indices pack 4 per texel: re-fill from the texel boundary so a
+            //partially-filled texel is rewritten whole
+            from = full ? 0 : sUpIdx & ~3;
+            for (int i = from; i < sBandIdx.Count; i++)
+                sIdxData[i] = sBandIdx[i];
+            Push(sBandIdxTex, sIdxData, full, from / 4, (sBandIdx.Count + 3) / 4);
+            sUpIdx = sBandIdx.Count;
 
-            tex = EnsureTex(ref sGlyphTex, Mathf.Max(sGlyphMeta.Count, 1));
-            d = Scratch(tex);
-            for (int i = 0; i < sGlyphMeta.Count; i++)
+            full = EnsureTexAndData(ref sGlyphTex, ref sGlyphData, Mathf.Max(sGlyphMeta.Count, 1));
+            from = full ? 0 : sUpGlyphs;
+            for (int i = from; i < sGlyphMeta.Count; i++)
             {
-                d[i * 4] = sGlyphMeta[i].x;     d[i * 4 + 1] = sGlyphMeta[i].y;
-                d[i * 4 + 2] = sGlyphMeta[i].z; d[i * 4 + 3] = sGlyphMeta[i].w;
+                sGlyphData[i * 4] = sGlyphMeta[i].x;     sGlyphData[i * 4 + 1] = sGlyphMeta[i].y;
+                sGlyphData[i * 4 + 2] = sGlyphMeta[i].z; sGlyphData[i * 4 + 3] = sGlyphMeta[i].w;
             }
-            Upload(tex, d);
+            Push(sGlyphTex, sGlyphData, full, from, sGlyphMeta.Count);
+            sUpGlyphs = sGlyphMeta.Count;
 
             version++;
             //one set of globals serves all three consumers: the buffer-path
@@ -176,6 +252,27 @@ namespace FairyGUI
             if (sBandsTex != null) { UnityEngine.Object.Destroy(sBandsTex); sBandsTex = null; }
             if (sBandIdxTex != null) { UnityEngine.Object.Destroy(sBandIdxTex); sBandIdxTex = null; }
             if (sGlyphTex != null) { UnityEngine.Object.Destroy(sGlyphTex); sGlyphTex = null; }
+            if (sStagingTex != null) { UnityEngine.Object.Destroy(sStagingTex); sStagingTex = null; }
+            sPtsData = sBandsData = sIdxData = sGlyphData = null;
+            sUpCurves = sUpBands = sUpIdx = sUpGlyphs = 0;
+            sDirty = true; //next EnsureBuffers rebuilds from the lists
+        }
+
+        /// <summary>
+        /// Resident bytes of the store: the raw TTF, the four GPU tables and
+        /// their CPU mirrors (audit: the panel had counts, never bytes).
+        /// </summary>
+        public static long residentBytes
+        {
+            get
+            {
+                long n = sFontData != null ? sFontData.Length : 0;
+                if (sPtsTex != null) n += (long)sPtsTex.width * sPtsTex.height * 16 * 2;
+                if (sBandsTex != null) n += (long)sBandsTex.width * sBandsTex.height * 16 * 2;
+                if (sBandIdxTex != null) n += (long)sBandIdxTex.width * sBandIdxTex.height * 16 * 2;
+                if (sGlyphTex != null) n += (long)sGlyphTex.width * sGlyphTex.height * 16 * 2;
+                return n;
+            }
         }
 
         // ---------- TTF parsing (glyf quadratics; PoC origin: Examples/CurveTextPoC, archived in batch 4 — M9b integrated this path) ----------
@@ -196,6 +293,13 @@ namespace FairyGUI
                 int rec = 12 + i * 16;
                 tables[System.Text.Encoding.ASCII.GetString(sFontData, rec, 4)] = (int)U32(rec + 8);
             }
+            //CFF/OTF fonts (Source Han/Noto Sans SC among them) carry CFF
+            //outlines, no glyf table — refuse with the actionable message
+            //instead of a KeyNotFoundException three fields later (audit)
+            if (!tables.ContainsKey("glyf"))
+                throw new IOException(
+                    "CurveFontStore: '" + sFontPath + "' has no glyf table — CFF/OTF outlines are "
+                    + "unsupported, a TrueType (.ttf with quadratic outlines) face is required.");
             tHead = tables["head"]; tLoca = tables["loca"]; tGlyf = tables["glyf"]; tHmtx = tables["hmtx"];
             unitsPerEm = U16(tHead + 18);
             sIndexToLoc = S16(tHead + 50);

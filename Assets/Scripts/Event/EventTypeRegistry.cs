@@ -29,9 +29,17 @@ namespace FairyGUI
             return id;
         }
 
-        public static string GetName(int id)
+        /// <summary>
+        /// Query-only lookup: resolves without interning. The Remove/has/
+        /// isDispatching family probes through this so a never-registered
+        /// string (dynamically composed names) cannot grow the registry —
+        /// GetId-on-query made every probe a permanent entry (audit).
+        /// </summary>
+        public static bool TryGetId(string type, out int id)
         {
-            return _names[id];
+            if (type == null)
+                throw new Exception("event type cant be null");
+            return _ids.TryGetValue(type, out id);
         }
     }
 }

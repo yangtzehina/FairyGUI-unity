@@ -38,6 +38,8 @@ namespace FairyGUIEditor
             EditorGUILayout.LabelField($"Live in-place streams: {sStreams.Count}"
                 + $"    backend default: {(InstancedUIStream.useVertexPath ? "vertex-stream" : "buffer")}"
                 + (InstancedUIStream.forceVertexPath ? " (forced)" : ""), EditorStyles.boldLabel);
+            EditorGUILayout.LabelField(
+                $"CurveFontStore resident: {EditorUtility.FormatBytes(CurveFontStore.residentBytes)} (TTF + 4 tables x GPU+CPU)");
 
             if (sStreams.Count == 0)
             {
@@ -59,6 +61,7 @@ namespace FairyGUIEditor
                 GUILayout.Label("claimed", EditorStyles.miniBoldLabel, GUILayout.Width(W));
                 GUILayout.Label("extracts", EditorStyles.miniBoldLabel, GUILayout.Width(W));
                 GUILayout.Label("fallbacks", EditorStyles.miniBoldLabel, GUILayout.Width(W + 30));
+                GUILayout.Label("~bytes", EditorStyles.miniBoldLabel, GUILayout.Width(W + 10));
             }
 
             using (var sv = new EditorGUILayout.ScrollViewScope(_scroll))
@@ -85,6 +88,7 @@ namespace FairyGUIEditor
                         GUILayout.Label(s.claimedLeafCount.ToString(), GUILayout.Width(W));
                         GUILayout.Label(s.extractCount.ToString(), GUILayout.Width(W));
                         GUILayout.Label($"pairs {s.lastSkippedPairs} / masked {s.lastMaskedSubtrees}", GUILayout.Width(W + 30));
+                        GUILayout.Label(EditorUtility.FormatBytes(s.approxResidentBytes), GUILayout.Width(W + 10));
                     }
                 }
             }

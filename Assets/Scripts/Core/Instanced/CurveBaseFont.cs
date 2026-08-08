@@ -46,6 +46,7 @@ namespace FairyGUI
         float _scale;
         bool _bold;
         Vector4 _fx;          //x = outline px, zw = shadow offset px
+        static bool sFxClampWarned;
         Color _fxOutline;
         Color _fxShadow;
         CurveFontStore.GlyphInfo _glyph;
@@ -96,6 +97,15 @@ namespace FairyGUI
             //segment of one field carries the same values
             _fx = new Vector4(format.outline, 0,
                 format.shadowOffset.x, format.shadowOffset.y);
+            //advisory: the shader clamps effect reach to the band height
+            //(~0.12-0.15em for typical CJK bboxes) — a thicker outline is
+            //silently truncated (documented v1 limit); warn once so the
+            //mobile fat-outline style does not read as a shader bug
+            if (format.outline > 0 && !sFxClampWarned && format.outline > _size * 0.12f)
+            {
+                sFxClampWarned = true;
+                Debug.LogWarning($"CurveBaseFont: outline {format.outline}px at size {_size} exceeds the band-height clamp (~12% of size); the ring will render thinner than asked. Curve-text v1 limit.");
+            }
             _fxOutline = format.outlineColor;
             _fxShadow = format.shadowColor;
             format.FillVertexColors(sVertexColors);
@@ -212,7 +222,10 @@ namespace FairyGUI
 
         override public bool HasCharacter(char ch)
         {
-            return CurveFontStore.loaded;
+            //honest cmap probe: constant true suppressed TextField's fallback
+            //substitution for every character this face does not map (audit) —
+            //missing characters rendered .notdef boxes or nothing
+            return CurveFontStore.HasChar(ch);
         }
 
         override public int GetLineHeight(int size)

@@ -16,6 +16,11 @@ namespace FairyGUI
     public static class IntStringTable
     {
         const int SmallRange = 10000;
+        //soft cap on the open-ended half: past this the table stops CACHING
+        //and just allocates — an unbounded value stream (a timestamp routed
+        //through a generated int binding) degrades to plain ToString cost
+        //instead of a permanent per-value leak (audit)
+        const int LargeCap = 4096;
         static readonly string[] _small = new string[SmallRange];
         static readonly Dictionary<long, string> _large = new Dictionary<long, string>();
 
@@ -36,7 +41,8 @@ namespace FairyGUI
             if (!_large.TryGetValue(value, out cached))
             {
                 cached = value.ToString();
-                _large.Add(value, cached);
+                if (_large.Count < LargeCap)
+                    _large.Add(value, cached);
             }
             return cached;
         }

@@ -111,9 +111,20 @@ namespace FairyGUI
             int cnt = _endCallbacks.Count;
             if (cnt > 0)
             {
-                for (int i = 0; i < cnt; i++)
-                    _endCallbacks[i]();
-                _endCallbacks.Clear();
+                //finally: a throwing callback must not skip the Clear — the
+                //whole list would re-run NEXT frame on top of that frame's
+                //registrations (painting captures re-register per frame, so
+                //dropping the remainder self-heals; same shape as the
+                //touch-chain try/finally)
+                try
+                {
+                    for (int i = 0; i < cnt; i++)
+                        _endCallbacks[i]();
+                }
+                finally
+                {
+                    _endCallbacks.Clear();
+                }
             }
         }
 

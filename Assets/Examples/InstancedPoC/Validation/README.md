@@ -56,7 +56,7 @@ InstancedValidationAll.RunBothBackends()
 buffer 路径正常,且以对照实验坐实像素来自实例 draw(关段渲染器像素消失、开回来复现,
 而叶子 `forceRenderingOff=true`,原生渲染器不参与)。全套 227 项在 buffer 后端一次
 全绿,双后端合计 **454/454**（批5b 并入后 19 套 282 项/双后端 **564/564** 复验全绿；
-作用域栅栏套件并入后 20 套 297 项/双后端 **594/594**；栅栏改绝对语义（无限盒）+ 对抗评审二轮回归并入后 20 套 308 项/双后端 **616/616**；曲线换字体回归 + 事件语义套件并入后 21 套 319 项/双后端 **638/638**；ColorFilter 认领缺口套件并入后 22 套 327 项/双后端 **654/654**；祖先 grayed + 四角渐变 + 档位命名回归并入后 22 套 334 项/双后端 **668/668**；对抗评审三轮加固并入后 22 套 340 项/双后端 **680/680**；MergedBatch 删除后 22 套 338 项/双后端 **676/676**，2026-08-08 实测）。
+作用域栅栏套件并入后 20 套 297 项/双后端 **594/594**；栅栏改绝对语义（无限盒）+ 对抗评审二轮回归并入后 20 套 308 项/双后端 **616/616**；曲线换字体回归 + 事件语义套件并入后 21 套 319 项/双后端 **638/638**；ColorFilter 认领缺口套件并入后 22 套 327 项/双后端 **654/654**；祖先 grayed + 四角渐变 + 档位命名回归并入后 22 套 334 项/双后端 **668/668**；对抗评审三轮加固并入后 22 套 340 项/双后端 **680/680**；MergedBatch 删除后 22 套 338 项/双后端 **676/676**；容量稳定不变量并入后 22 套 339 项/双后端 **678/678**，2026-08-08 实测）。
 
 **当初的触发条件未查明**,所以默认仍是顶点流(怪癖若复发,验证照样跑得起来);
 但正式验收请跑 `-ciBackend both`。
@@ -74,7 +74,7 @@ Unity -batchmode -projectPath . \
 有失败 1）。日志与报告首行是可 grep 的判定行：
 
 ```
-INSTANCED VALIDATION VERDICT: PASS pass=338 fail=0
+INSTANCED VALIDATION VERDICT: PASS pass=339 fail=0
 ```
 
 harness 注意事项（都踩过）：
@@ -111,7 +111,7 @@ harness 注意事项（都踩过）：
 | `FqsAutoMountSuite` | 27 | CreateObject 自动挂载：装填/兑现时序、provider 缓存、defer 阈值、嵌套作用域、**像素对照 diff=0**、陈旧回退。其中 **8 项是以对抗审查确认缺陷命名的回归项**：删除内容不留幽灵（构造期绑定的核心缺陷）、id 定身份、非导出组件不查 blob、分支解析键、contentScaleLevel 门（含 **.sN 档位命名契约与 provider 候选序**）、无源哈希拒绝、实例级拒绝不锁定、Bake 恢复调用方 mount。另有 c14/c21-c24 验源哈希门：覆盖**全部加载路径**（真走一遍字节数组/bundle 形态并与 Resources 比同值），且门禁值**跨依赖包**（blob 会冻结别的包的几何与图集 UV） |
 | `FqsSupersetSuite` | 13 | M8-7 超集烘焙：隐藏页进 blob（2→4 叶）、字节级重烘一致（还原纯度）、**首次显示零重编译**、六连翻页零重编译 + 逐状态像素全等、**命中测试三件套**（当前页可点/隐藏页不可点/翻页互换）、超集关闭时优雅降级 |
 | `CurveEffectsSuite` | 8 | 批5b 曲线字体效果：假粗体加宽（uv 位）、描边环成色/干净关闭（property block 复位）、阴影方向、组合、**跨带接缝双向注入证明**（'三'+10px 描边：故障 ringed=0）、实例流 barrier/认领分流 + 接管像素 |
-| `InstancedPerfInvariantSuite` | 14 | **性能不变量(确定性)**：各 tier 零重编译(槽/滚动/颜色/文本 slack/挂载移动/挂载内隐显)、三纹理合 1 段、段 GO 池化、idle Render 零分配、40 个 renderless 叶零渲染器、加叶不加段、**顶点上传宽度 72B/顶点**（声明值/布局求和/结构体 marshal 三者一致——字段被悄悄加宽时像素门全绿也会被抓到） |
+| `InstancedPerfInvariantSuite` | 15 | **性能不变量(确定性)**：各 tier 零重编译(槽/滚动/颜色/文本 slack/挂载移动/挂载内隐显)、三纹理合 1 段、段 GO 池化、idle Render 零分配、40 个 renderless 叶零渲染器、加叶不加段、**顶点上传宽度 72B/顶点**（声明值/布局求和/结构体 marshal 三者一致——字段被悄悄加宽时像素门全绿也会被抓到）、**相同开关两轮容量不增**（approxResidentBytes 账本） |
 | `EventSemanticsSuite` | 10 | 事件层语义（e96f994 的 7 项断言落盘 + 3 项扩展）：双 Add 去重、派发中增/删走快照（只影响下一轮）、capture→target→bubble 次序、嵌套异型/同型派发不腐蚀外层快照、isDispatching 计数器语义（嵌套后外层仍 true）、派发中 RemoveEventListeners、context data/sender、未知类型查询安静。E1a 类回归的常设门 |
 | `BinderReentrancyCheck` | 18 | MVVM Binder 重入（在 `Assets/Examples/Mvvm/`，由 `InstancedValidationAll` 一并调用） |
 
@@ -135,7 +135,7 @@ Unity -batchmode -projectPath . \
 ```
 
 判定行 `INSTANCED PERF VERDICT: PASS|FAIL pass=N fail=M`,退出码随结果。
-**必须单独一个 Unity 进程跑**,不能接在 338 项行为套件后面——那 338 项自己就会留下
+**必须单独一个 Unity 进程跑**,不能接在 339 项行为套件后面——那 338 项自己就会留下
 GC/驱动债,而 batchmode 冷启动天然就是"新鲜会话"。
 
 方法学(针对 M8-5 那次「45% 被读成 18%」的事故):

@@ -47,7 +47,8 @@ namespace FairyGUI
         /// <param name="callback"></param>
         public void RemoveEventListener(string strType, EventCallback1 callback)
         {
-            EventBridge bridge = TryGetEventBridge(EventTypeRegistry.GetId(strType));
+            EventBridge bridge = EventTypeRegistry.TryGetId(strType, out int __tid)
+                ? TryGetEventBridge(__tid) : null;
             if (bridge != null)
                 bridge.Remove(callback);
         }
@@ -59,7 +60,8 @@ namespace FairyGUI
         /// <param name="callback"></param>
         public void RemoveEventListener(string strType, EventCallback0 callback)
         {
-            EventBridge bridge = TryGetEventBridge(EventTypeRegistry.GetId(strType));
+            EventBridge bridge = EventTypeRegistry.TryGetId(strType, out int __tid)
+                ? TryGetEventBridge(__tid) : null;
             if (bridge != null)
                 bridge.Remove(callback);
         }
@@ -81,7 +83,8 @@ namespace FairyGUI
         /// <param name="callback"></param>
         public void RemoveCapture(string strType, EventCallback1 callback)
         {
-            EventBridge bridge = TryGetEventBridge(EventTypeRegistry.GetId(strType));
+            EventBridge bridge = EventTypeRegistry.TryGetId(strType, out int __tid)
+                ? TryGetEventBridge(__tid) : null;
             if (bridge != null)
                 bridge.RemoveCapture(callback);
         }
@@ -105,7 +108,8 @@ namespace FairyGUI
 
             if (strType != null)
             {
-                EventBridge bridge = TryGetEventBridge(EventTypeRegistry.GetId(strType));
+                EventBridge bridge = EventTypeRegistry.TryGetId(strType, out int __tid)
+                ? TryGetEventBridge(__tid) : null;
                 if (bridge != null)
                     bridge.Clear();
             }
@@ -123,7 +127,8 @@ namespace FairyGUI
         /// <returns></returns>
         public bool hasEventListeners(string strType)
         {
-            EventBridge bridge = TryGetEventBridge(EventTypeRegistry.GetId(strType));
+            EventBridge bridge = EventTypeRegistry.TryGetId(strType, out int __tid)
+                ? TryGetEventBridge(__tid) : null;
             if (bridge == null)
                 return false;
 
@@ -137,7 +142,8 @@ namespace FairyGUI
         /// <returns></returns>
         public bool isDispatching(string strType)
         {
-            EventBridge bridge = TryGetEventBridge(EventTypeRegistry.GetId(strType));
+            EventBridge bridge = EventTypeRegistry.TryGetId(strType, out int __tid)
+                ? TryGetEventBridge(__tid) : null;
             if (bridge == null)
                 return false;
 

@@ -180,6 +180,47 @@ public partial class VM8 : ViewModel { [Observable] int _2ndSlot; [Observable] i
                 N(gen1) == N(gen2), N(gen1) + "  vs  " + N(gen2));
         }
 
+        //--- D1-D7: KeyedListDiffer semantics (audit: shipped with zero tests) --
+        {
+            var diff = new FairyGUI.Mvvm.KeyedListDiffer<(int id, string text), int>(x => x.id);
+            var list = new List<(int id, string text)> { (1, "a"), (2, "b"), (3, "c") };
+            var hits = new List<int>();
+            int n1 = diff.Apply(list, i => hits.Add(i));
+            Check("d1.first Apply renders every index", n1 == 3 && string.Join(",", hits) == "0,1,2");
+
+            hits.Clear();
+            Check("d2.clean second Apply renders nothing", diff.Apply(list, i => hits.Add(i)) == 0 && hits.Count == 0);
+
+            list[1] = (9, "b2");
+            hits.Clear();
+            Check("d3.one key change renders exactly that index",
+                diff.Apply(list, i => hits.Add(i)) == 1 && string.Join(",", hits) == "1");
+
+            list.Add((4, "d"));
+            hits.Clear();
+            Check("d4.count change falls back to a full pass",
+                diff.Apply(list, i => hits.Add(i)) == 4 && hits.Count == 4);
+
+            //V11 regression: render throws -> the OLD key must survive so the
+            //next Apply retries; bookkeeping-first marked the row clean forever
+            list[2] = (7, "boom");
+            bool threw = false;
+            try { diff.Apply(list, i => throw new InvalidOperationException("render failed")); }
+            catch (InvalidOperationException) { threw = true; }
+            hits.Clear();
+            Check("d5.render throw keeps the old key and retries (V11)",
+                threw && diff.Apply(list, i => hits.Add(i)) == 1 && string.Join(",", hits) == "2");
+
+            list[0] = (8, "a2");
+            diff.Record(list);
+            hits.Clear();
+            Check("d6.Record marks clean without rendering", diff.Apply(list, i => hits.Add(i)) == 0);
+
+            diff.Reset();
+            hits.Clear();
+            Check("d7.Reset forces a full re-render", diff.Apply(list, i => hits.Add(i)) == 4);
+        }
+
         Console.WriteLine($"RESULT pass={pass} fail={fail}");
         Console.Write(Log.ToString());
         Environment.Exit(fail == 0 ? 0 : 1);

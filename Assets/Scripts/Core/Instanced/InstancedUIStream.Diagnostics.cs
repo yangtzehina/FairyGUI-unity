@@ -151,6 +151,34 @@ namespace FairyGUI
         }
 
         /// <summary>Validation probe: whether a leaf is currently claimed (in-place).</summary>
+        /// <summary>
+        /// Approximate resident bytes of this stream: GPU instance/clip
+        /// buffers (buffer path), segment + pull meshes (vertex path, 4
+        /// QuadVertex per quad), and the managed quad/staging lists. The
+        /// audit's finding was a panel with counts and no bytes — capacities
+        /// here only ever grow, so this is the number to watch across long
+        /// window-churn sessions.
+        /// </summary>
+        public long approxResidentBytes
+        {
+            get
+            {
+                long n = 0;
+                if (_buffer != null)
+                    n += (long)_bufferCapacity * 80;
+                if (_clipBuffer != null)
+                    n += (long)_clipBufferCapacity * 32;
+                if (_vertexPath)
+                {
+                    for (int i = 0; i < _segments.Count; i++)
+                        n += (long)_segments[i].count * 4 * QuadVertex.Stride;
+                }
+                n += (long)(_pullCapacity > 0 ? _pullCapacity : 0) * 4 * QuadVertex.Stride;
+                n += ((long)_quads.Capacity + _staging.Capacity) * 80;
+                return n;
+            }
+        }
+
         public bool IsClaimed(NGraphics graphics)
         {
             return _claimed.Contains(graphics);

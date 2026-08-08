@@ -244,6 +244,31 @@ public static class InstancedPerfInvariantSuite
             }
             env.Check("p14.curve-glyph index survives the packed-byte round trip (0..65535)",
                 glyphRoundTrip);
+
+            //--- p15: identical churn does not grow resident bytes ----------
+            //Capacities only ever grow by design (pools, slack, buffers); the
+            //invariant that keeps long window-churn sessions honest is that a
+            //SECOND identical cycle finds every capacity already sized —
+            //bytes after cycle 2 must not exceed bytes after cycle 1 (audit:
+            //the panel had counts, never bytes, and nobody watched growth)
+            long AfterCycle()
+            {
+                var win = new GComponent();
+                win.SetSize(300, 200);
+                env.root.AddChild(win);
+                for (int i = 0; i < 12; i++)
+                    env.Rect(win, (i % 4) * 70 + 5, (i / 4) * 60 + 5, 60, 50,
+                        new Color(0.2f + 0.05f * i, 0.4f, 0.6f));
+                env.Step(2);
+                long bytes = stream.approxResidentBytes;
+                win.Dispose();
+                env.Step(2);
+                return bytes;
+            }
+            long cycle1 = AfterCycle();
+            long cycle2 = AfterCycle();
+            env.Check($"p15.identical window churn re-uses capacity (cycle1 {cycle1}B, cycle2 {cycle2}B)",
+                cycle1 > 0 && cycle2 <= cycle1);
         }
         finally
         {

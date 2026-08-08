@@ -28,7 +28,7 @@ FairyGUI-unity 的现代化 fork（**开发在 `master` 上**，2026-08-01 起�
 - **Unity**：2022.3.62f3（Hub 安装，含 WebGL/iOS 模块）。`ProjectSettings/ProjectVersion.txt`
   必须保持 2022.3.62f3——见踩坑第 1 条。
 - **生成器行为门**：`~/.dotnet/dotnet run -c Release --project tools/FairyGUI.Mvvm.Generator.Tests`
-  ——用 CSharpGeneratorDriver 跑真实生成器，11 项（Observable+Bind；FuiView 双胞胎
+  ——用 CSharpGeneratorDriver 跑真实生成器 + KeyedListDiffer 纯 C# 语义（审计：零测试零消费者），18 项（Observable+Bind 11 + 差分器 7；FuiView 双胞胎
   2026-08-08 退役，typed view 单源=烘焙 facade），判定行
   `RESULT pass=N fail=N`。改 `tools/FairyGUI.Mvvm.Generator/` 必跑，且产物要
   `dotnet build -c Release` 后拷贝到 `Assets/RoslynAnalyzers/`（Unity 消费的是 DLL，
@@ -49,7 +49,7 @@ FairyGUI-unity 的现代化 fork（**开发在 `master` 上**，2026-08-01 起�
 2. `Tools/FairyGUI/Run FQS Parity` —— 常设对照门禁（枚举不抽样 + 像素/几何双层 + 篡改阶梯），
    结果写 `Temp/FqsParityResults.txt`，判定行 `FQS PARITY VERDICT: PASS|FAIL`。
 3. `FairyGUI/Instanced UI Streams` —— 流诊断面板（段/quads/槽/认领/重编译计数）。
-4. `Tools/FairyGUI/Run Validation Suites` —— 跑仓库内的 338 项行为/像素/不变量套件
+4. `Tools/FairyGUI/Run Validation Suites` —— 跑仓库内的 339 项行为/像素/不变量套件
    （需已在 Play 模式；无头形态见下）。**UTF 形态**：`Tools/FairyGUI/Run Validation
    Suites (UTF)`（或 `FairyGUIEditor.ValidationTestRunnerCI.Run()`）在 Test Runner 上
    跑同一批套件（22 套 × 双后端 = 44 项），报告 `Logs/UtfValidationResults.txt`，
@@ -76,7 +76,7 @@ CI 类入口（非菜单）：
   绿了才提交，提交信息里写验收数字。
 - **后端覆盖：两条都要跑**。历史上本机编辑器的 buffer 路径（顶点级 StructuredBuffer）
   静默不出图，所以套件默认 `forceVertexPath = true`。**2026-07-31 复测该怪癖不再复现**
-  （对照实验确认像素来自实例 draw），buffer 后端 227/227 全绿，双后端 454/454（批5b 并入后 282 项，双后端 564/564；作用域栅栏套件并入后 297 项，双后端 594/594；栅栏改绝对语义 + 对抗评审二轮回归并入后 308 项，双后端 616/616；曲线换字体回归 + 事件语义套件并入后 21 套 319 项，双后端 638/638；ColorFilter 认领缺口回归并入后 22 套 327 项，双后端 654/654；祖先 grayed/四角渐变/档位命名回归并入后 22 套 334 项，双后端 668/668；对抗评审三轮加固（盖章通道收窄/跨流迁移/FormatVersion 3/档位缓存键）并入后 22 套 340 项，双后端 680/680；MergedBatch 删除随行 22 套 338 项，双后端 676/676）。
+  （对照实验确认像素来自实例 draw），buffer 后端 227/227 全绿，双后端 454/454（批5b 并入后 282 项，双后端 564/564；作用域栅栏套件并入后 297 项，双后端 594/594；栅栏改绝对语义 + 对抗评审二轮回归并入后 308 项，双后端 616/616；曲线换字体回归 + 事件语义套件并入后 21 套 319 项，双后端 638/638；ColorFilter 认领缺口回归并入后 22 套 327 项，双后端 654/654；祖先 grayed/四角渐变/档位命名回归并入后 22 套 334 项，双后端 668/668；对抗评审三轮加固（盖章通道收窄/跨流迁移/FormatVersion 3/档位缓存键）并入后 22 套 340 项，双后端 680/680；MergedBatch 删除随行 22 套 338 项，双后端 676/676；容量稳定不变量 p15 并入后 22 套 339 项，双后端 678/678）。
   默认仍留顶点流（怪癖若复发验证照跑），但**验收应跑 `-ciBackend both`**：两条后端是
   同一语义的两套 shader + 上传实现，只跑一条等于覆盖了一半。切换用
   `InstancedValidationEnv.useVertexBackend` / `InstancedValidationAll.RunOn(bool)` /
@@ -93,9 +93,9 @@ CI 类入口（非菜单）：
 - **像素探针坐标**：`(逻辑坐标) × GRoot.contentScaleFactor` → 屏幕像素，y 翻转
   `RH-1-y`。验证前确认演示场景已打开（见踩坑第 3 条）。
 - **验证套件已全部固化进仓库**：`Assets/Examples/InstancedPoC/Validation/`
-  （22 套 338 项：M1 重组器 19、M3 裁剪栈 10、作用域栅栏 26、M7 SDF 17、M4 场景 19、
+  （22 套 339 项：M1 重组器 19、M3 裁剪栈 10、作用域栅栏 26、M7 SDF 17、M4 场景 19、
   ColorFilter 认领 8、批1-4 21/8/19/10/12、批5 曲线文本 11、M8-1/2/4/5 15/19/20/14、
-  自动挂载 27、超集 13、曲线效果 8、性能不变量 14、事件语义 10、MVVM 18）。
+  自动挂载 27、超集 13、曲线效果 8、性能不变量 15、事件语义 10、MVVM 18）。
   跑法、harness 约定与坑见该目录 `README.md`；一条
   `eval "return InstancedValidationAll.Run();"` 跑完全部。
   **新增验证写进该目录**——早期套件只留在会话里，丢过一次，是靠提交信息重建的。

@@ -10,5 +10,8 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.9.2" />
     <ProjectReference Include="../FairyGUI.Mvvm.Generator/FairyGUI.Mvvm.Generator.csproj" />
+    <!-- the differ is pure C# (audit: zero tests, zero consumers) — compile
+         the REAL source into this gate, stubs would defeat the point -->
+    <Compile Include="../../Assets/MVVM/KeyedListDiffer.cs" Link="KeyedListDiffer.cs" />
   </ItemGroup>
 </Project>
