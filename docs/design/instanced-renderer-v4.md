@@ -276,6 +276,36 @@ painting/滤镜作用域、GoWrapper（breakBatch）、非 quad 拓扑网格（�
 失败的命令，如任意多边形 Shape——PoC 中自动跳过）、`graphics.enabled` 参与
 mergeability（评审 M10/M14 教训：enabled 也是实例化准入条件且变化要推送）。
 
+**容器级作用域的"按段 z 穿插"承诺自 2026-08-07 起是实现，不再只是清单**（此前
+只有 leaf 级 fallback 产生排序栅栏，stencil mask / painting / GoWrapper 在
+ExtractContainer 直接 continue——夹在两段被认领 quad 之间的原生子树整体浮到
+两侧之上或之下，审计确认的正确性缺口）：三类作用域各发一个 key=null 的
+**无限盒**栅栏条目，在 BuildSegments 关闭 run——绝对栅栏，任何流内容不得
+跨越，正是原生 fairyBatching 给 breakBatch 元素的语义（原生本来也不跨作用域
+合并，所以只损失原生也没有的合并，零正确性代价）。首版用的是保守紧 AABB
+（mask 盒/blit 网格/包装 renderer 世界盒并集），被对抗评审二轮击毙：**每一种
+紧界都会在无失效通道的情况下变陈旧**——mask TweenMove（mask 叶未被认领又非
+Container，_NotifyTransform 推送被丢弃）、GoWrapper 内部 Animator 动画（完全
+绕开 FairyGUI setter）、滤镜 extend 长大重建 blit mesh；且已析构 mask 的
+cachedTransform 解引用会让重编译 NRE。绝对栅栏一次删掉全部四类缺口。
+run 排序的代表 order 取子树**最后**一个原生槽（mask=stencil eraser、
+GoWrapper=最后一个 renderer（_MaxRenderingOrder，块尾多槽实测 b15-17）、
+painting=blit quad 本身——painting 子树的孩子虽占槽位但在捕获层，不参与主
+相机排序）：天花板过滤两侧等价（被认领叶的 order 永不落在子树区间内），空 run
+地板 order+1 必须落在整个子树之上。配套：mask setter 与 reversedMask（评审二轮
+后从裸字段改属性）直接 _NotifyStructure（UpdateBatchingFlags 只在 BatchingRoot
+翻转时失效，已有 clipRect 的容器上设/清 mask、以及运行时翻转 reversedMask 都会
+静默漏通知）；流根自带 stencil mask 时拒绝认领整棵子树（宁可不合批不画错，每个
+挂起期各警一次）；run 探针折叠**全部**栅栏 order（端点采样会漏中间栅栏的同帧
+互抵移位）。验收：InstancedScopeBarrierSuite 26 项（三类三明治像素 z 序 +
+运行时设 mask 重编译 + root-mask 挂起/恢复 + 双 renderer GoWrapper 块尾数学 +
+fairyBatching 宿主 eraser 赋序 + 相邻双作用域夹持中间 run + reversedMask 运行时
+翻转通知），双后端 616/616（2026-08-08 实测）。
+已知边界（评审二轮确认、有意不修）：GoWrapper 烘焙从"静默烘出缺内容的 blob"
+改为拒绝（计入 masked 计数，文案已标注三类）；leaf 级 ColorFilter
+（Image/MovieClip 上 ToggleKeyword）仍无通知通道，已认领叶运行时挂滤镜静默
+失效——预存缺口，独立跟踪。
+
 ## 10. 命中测试与事件
 
 零改动。命中测试从来不走 renderer（DisplayObject 树 + contentRect/hitArea），

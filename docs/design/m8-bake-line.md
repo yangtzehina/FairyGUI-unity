@@ -277,6 +277,7 @@ c22 真正走一遍字节数组加载（bundle 形态）并断言**与 Resources
 
 | 日期 | 站 | 状态 | 验证 |
 |---|---|---|---|
+| 2026-08-08 | 拒绝规则跟进 | ✅ | 容器级作用域栅栏（v4 §9）让 GoWrapper 变得可计数：此前含 GoWrapper 的树在烘焙器眼里 runCount==1、masked==0，**静默烘出缺包装内容的 blob**；现在 GoWrapper 计入 scope 计数、按 "masked/painting/GoWrapper subtree(s)" 拒绝。附带：拒绝检查换序（scope 计数先于通用栅栏计数——scope 栅栏也关 run，不换序会把拒因误报成 "fallback barrier(s)"）。验收在 InstancedScopeBarrierSuite（26 项，双后端 616/616）与既有 M8-1 拒烘矩阵。 |
 | 2026-07-30 | 立项 | ✅ 本文档 | — |
 | 2026-07-30 | M8-1 | ✅ | 专项 15/15：逐位 quad 一致、字节级确定性、篡改/敌意计数干净拒绝、拒绝规则全套（根级 mask/文本对象存在即拒/movieclip/外部纹理默认拒/blend 栅栏）；真实包冒烟 Basics 5/28 组件烘出（全 Package TexRef + 源哈希），其余按精确理由拒绝。像素门随装载移至 M8-2。三代理对抗核查 1 blocker + 7 must-fix 全修：根级 mask 漏拒、Read 无前置校验（敌意计数 OOM）、LeafRecord 隐式尾 padding 显式化、烘焙后端未钉死（顶点路径 clip 粗化会冻进 blob）、External TexRef 会话态身份、图集冷热致文本拒绝不确定（改存在即拒）、菜单重名覆盖（改 ID 创建）、GRoot 缩放漂入 quad 低位（改无缩放 Stage 挂载）。 |
 | 2026-07-30 | M8-2 | ✅ | 专项 19/19：**挂载即转换槽**（blob quads 天然组件局部空间 → 挂载容器分配槽，移动/缩放 tier-1 零重编译）；M8-1 顺延像素门通过（挂载 vs 运行时全区域 diff=0）；混合行为（动态兄弟 churn tier-2、烘焙叶颜色 tier 按 bakedAlpha 精确重标定、tier-2 重写 + 重拼接同帧自愈）；失效协议（挂载内结构变化 → 失效 → 运行时回退照常渲染；哈希门拒绝陈旧 blob）。实测 200 叶子树 Extract：挂载 0.111ms vs 运行时 0.781ms = **7.03×**。施工修正：Flush 结构分支 Extract 后跌落队列处理段（拼接自愈同帧结算，不闪帧）。环境教训：多轮 Play 循环后编辑器可能落在空场景（相机无引导、全屏零渲染）——像素验证前须确认演示场景已打开。 |

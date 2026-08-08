@@ -63,7 +63,6 @@ namespace FairyGUIEditor
             int i = Array.IndexOf(args, "-ciOutput");
             if (i >= 0 && i + 1 < args.Length)
                 output = args[i + 1];
-
             //publish the session state BEFORE anything that can Fail(): Fail()
             //-> WriteReport() reads the path back out of SessionState, so an
             //early return from above this line writes the FAIL verdict to the

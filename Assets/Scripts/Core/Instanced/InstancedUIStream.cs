@@ -270,6 +270,7 @@ namespace FairyGUI
         struct PendingLeaf
         {
             public NGraphics graphics;
+            public DisplayObject scope; //container-level fallback scope (mask/painting/GoWrapper); graphics is the blit quad or null
             public Texture texture;
             public uint flags;
             public uint clipIndex;
@@ -294,9 +295,35 @@ namespace FairyGUI
         readonly List<ClipEntry> _clipEntries = new List<ClipEntry>();
         readonly List<QuadInstance> _quads = new List<QuadInstance>();
         readonly List<QuadInstance> _staging = new List<QuadInstance>();
-        //graphics of the fallback leaf that CLOSES run r (null for the last run);
-        //its native renderingOrder separates the runs each frame
-        readonly List<NGraphics> _runBarriers = new List<NGraphics>();
+        //the fallback that CLOSES run r (absent for the last run): a leaf's
+        //graphics, or a container-level scope (stencil mask / painting capture /
+        //GoWrapper) whose native renderers occupy a contiguous order block.
+        //order is the LAST slot of that block: the ceiling test excludes leaves
+        //sorted past the barrier either way (claimed leaves never hold orders
+        //inside the block), and the empty-run floor (order+1) must land ABOVE
+        //the whole block, not inside it
+        struct RunBarrier
+        {
+            public NGraphics graphics;  //leaf fallback, or a painting scope's blit quad
+            public DisplayObject scope; //masked container / GoWrapper when graphics is null
+
+            public int order
+            {
+                get
+                {
+                    if (graphics != null)
+                        return graphics.renderingOrder;
+                    Container mc = scope as Container;
+                    if (mc != null && mc.mask != null && mc.mask.graphics != null)
+                        return mc.mask.graphics._StencilEraserOrder; //the eraser draws LAST in a masked subtree
+                    GoWrapper gw = scope as GoWrapper;
+                    if (gw != null)
+                        return gw._MaxRenderingOrder;
+                    return scope != null ? scope.renderingOrder : 0;
+                }
+            }
+        }
+        readonly List<RunBarrier> _runBarriers = new List<RunBarrier>();
         readonly List<GameObject> _segmentPool = new List<GameObject>();
         readonly List<Mesh> _meshPool = new List<Mesh>();
         //batch 3: recompiles reuse instead of reallocate — prior segments transfer
@@ -363,6 +390,7 @@ namespace FairyGUI
         Vector2 _drawOffset;
         int _skippedPairs;
         int _maskedSubtrees;
+        bool _rootMaskWarned;
         //transform slots (batch 3, design §4.2 tier 1): interior containers that
         //keep moving get promoted to a slot — their subtree quads are baked in
         //SLOT-local space and the shader multiplies by the slot matrix, so a
@@ -841,7 +869,26 @@ namespace FairyGUI
                         _hotContainers.Remove(c);
                 }
 
-                ExtractContainer(_container, _rootWorldToLocal, 0, _container.grayed, 0);
+                //a stream root with a stencil mask cannot be expressed: claimed
+                //leaves leave the native pass, so the mask would neither write
+                //stencil against them nor clip the segments — claim nothing and
+                //let the whole subtree render natively (wrong batching beats
+                //wrong pixels; the claim diff below releases earlier claims)
+                if (_inPlace && _container.mask != null)
+                {
+                    if (!_rootMaskWarned)
+                    {
+                        _rootMaskWarned = true;
+                        Debug.LogWarning("InstancedUIStream: the stream root has a stencil mask; instanced rendering is suspended until the mask is removed.", _container.gameObject);
+                    }
+                }
+                else
+                {
+                    //re-arm the warning: each suspension period warns once
+                    //(Extract only runs on structure dirt, so no spam)
+                    _rootMaskWarned = false;
+                    ExtractContainer(_container, _rootWorldToLocal, 0, _container.grayed, 0);
+                }
 
                 if (_sortAdjacency)
                     AdjacencySorter.Sort(_entries);
@@ -1212,11 +1259,23 @@ namespace FairyGUI
                 bool childGrayed = grayed || child.grayed;
 
                 //painting scopes (filter/blend/perspective/cacheAsBitmap) render
-                //through their own capture pipeline — leave them native (M5 will
-                //interleave; review M12)
+                //through their own capture pipeline — leave them native (review
+                //M12), but as a sort BARRIER: the blit quad interleaves with the
+                //stream in the native sorting space (design §9)
                 if (child._paintingMode > 0)
                 {
                     _maskedSubtrees++;
+                    AddScopeBarrier(child, child.paintingGraphics);
+                    continue;
+                }
+
+                //GoWrapper renders through self-managed external renderers and
+                //has no graphics: without a barrier its 3D content could sort
+                //anywhere relative to the stream's segments
+                if (child is GoWrapper)
+                {
+                    _maskedSubtrees++;
+                    AddScopeBarrier(child, null);
                     continue;
                 }
 
@@ -1232,10 +1291,13 @@ namespace FairyGUI
 
                 if (child is Container c)
                 {
-                    //stencil-masked scopes go to the fallback renderer (M5); skip
+                    //stencil-masked scopes go to the fallback renderer, and the
+                    //subtree's native block needs a barrier so overlapping stream
+                    //content cannot sort across it (design §9)
                     if (c.mask != null)
                     {
                         _maskedSubtrees++;
+                        AddScopeBarrier(c, null);
                         continue;
                     }
                     //M8-2: a valid baked mount splices its precompiled stream
@@ -1262,6 +1324,30 @@ namespace FairyGUI
                     ExtractContainer(c, childW2L, childClip, childGrayed, childSlot);
                 }
             }
+        }
+
+        /// <summary>
+        /// Emits a sort barrier for a container-level fallback scope (stencil
+        /// mask / painting capture / GoWrapper): the subtree keeps its native
+        /// renderers, and a null-key entry with an INFINITE box keeps ALL
+        /// stream content from sorting across it — the same absolute-barrier
+        /// semantics native fairyBatching gives breakBatch elements. A tight
+        /// AABB would merge better, but every tight bound goes stale with no
+        /// invalidation channel to catch it (mask tween, wrapped-content
+        /// animation, filter extend growth — adversarial review round 2), and
+        /// the native batcher never merged across these scopes either.
+        /// The scope closes a run in BuildSegments, so the neighboring runs'
+        /// sortingOrders straddle its native order block (see RunBarrier.order).
+        /// </summary>
+        void AddScopeBarrier(DisplayObject scope, NGraphics blit)
+        {
+            _entries.Add(new AdjacencyEntry
+            {
+                key = null,
+                x0 = -1e30f, y0 = -1e30f, x1 = 1e30f, y1 = 1e30f,
+                payload = _pending.Count
+            });
+            _pending.Add(new PendingLeaf { graphics = blit, scope = scope, instanceable = false });
         }
 
         /// <summary>
@@ -1834,7 +1920,7 @@ namespace FairyGUI
                 if (!leaf.instanceable)
                 {
                     //_runBarriers[r] closes run r; the final run has no closer
-                    _runBarriers.Add(leaf.graphics);
+                    _runBarriers.Add(new RunBarrier { graphics = leaf.graphics, scope = leaf.scope });
                     runIndex++;
                     seg = null;
                     continue;
@@ -2386,11 +2472,15 @@ namespace FairyGUI
 
                 //run orders shift only when the native renderingOrder assignment
                 //moved (tree changes outside the stream shift our block uniformly,
-                //changes inside recompile via Extract) — probe first leaf+barrier
-                //instead of walking every leaf every frame (batch 2)
+                //changes inside recompile via Extract) — probe first leaf plus
+                //EVERY barrier order instead of walking every leaf every frame
+                //(batch 2; endpoint-only sampling missed compensating same-frame
+                //shifts between middle barriers, e.g. two GoWrappers trading a
+                //renderer count — barriers are few, the loop is a handful of
+                //int reads)
                 int runProbe = _leaves.Count > 0 ? _leaves[0].graphics.renderingOrder : 0;
-                if (_runBarriers.Count > 0)
-                    runProbe = (runProbe * 397) ^ _runBarriers[0].renderingOrder;
+                for (int bi = 0; bi < _runBarriers.Count; bi++)
+                    runProbe = (runProbe * 397) ^ _runBarriers[bi].order;
                 if (runProbe != _lastRunOrderProbe)
                 {
                     ComputeRunOrders();
@@ -2556,7 +2646,7 @@ namespace FairyGUI
             {
                 LeafRange leaf = _leaves[i];
                 int r = _segments[leaf.segIndex].runIndex;
-                int barrierOrder = r < _runBarriers.Count ? _runBarriers[r].renderingOrder : int.MaxValue;
+                int barrierOrder = r < _runBarriers.Count ? _runBarriers[r].order : int.MaxValue;
                 int o = leaf.graphics.renderingOrder;
                 if (o < barrierOrder && o > _runOrderScratch[r])
                     _runOrderScratch[r] = o;
@@ -2567,8 +2657,8 @@ namespace FairyGUI
                 if (_runOrderScratch[r] == int.MinValue)
                 {
                     //run has no usable slot (nothing in it overlaps its barrier):
-                    //sit just above the previous barrier
-                    _runOrderScratch[r] = r > 0 ? _runBarriers[r - 1].renderingOrder + 1 : 0;
+                    //sit just above the previous barrier's LAST native slot
+                    _runOrderScratch[r] = r > 0 ? _runBarriers[r - 1].order + 1 : 0;
                 }
             }
         }

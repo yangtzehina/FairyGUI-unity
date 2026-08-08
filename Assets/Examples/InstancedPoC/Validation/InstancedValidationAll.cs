@@ -3,12 +3,11 @@ using System;
 using System.Text;
 
 /// <summary>
-/// Runs every instanced-renderer validation suite in regression order —
-/// M1 reassembler 17, M3 clip stack 10, M7 SDF 17, M4 scenarios 19,
-/// batch1 14, batch2 8, batch3 19, batch3d 10, batch4 12, batch5 curve
-/// text 10, the M8 bake line (M8-1 15, M8-2 19, M8-4 20, M8-5 14), the
-/// deterministic perf invariants 12, plus the MVVM reentrancy 11 — and
-/// aggregates the verdict. Wall-clock RATIO gates are a separate fresh-session
+/// Runs every instanced-renderer validation suite in regression order and
+/// aggregates the verdict. The suite catalog with per-suite check counts
+/// lives in Validation/README.md (single source of truth — per-suite numbers
+/// enumerated here drifted three times before this comment gave up on them).
+/// Wall-clock RATIO gates are a separate fresh-session
 /// entry (FairyGUIEditor.InstancedPerfCI); see Validation/README.md.
 /// M8-3 (codegen) and M8-6 (the standing parity catalog) live in the editor
 /// assembly: see Validation/README.md. Invoke
@@ -98,6 +97,7 @@ public static class InstancedValidationAll
         //wrong, everything above is green for nothing
         RunSuite("m1_reassembler", InstancedReassemblerSuite.Run);
         RunSuite("m3_clipstack", InstancedClipStackSuite.Run);
+        RunSuite("scope_barriers", InstancedScopeBarrierSuite.Run);
         RunSuite("m7_sdf", InstancedM7SdfSuite.Run);
         RunSuite("m4_scenarios", M4ScenarioSuite.Run);
         RunSuite("batch1", InstancedBatch1Suite.Run);

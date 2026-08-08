@@ -601,6 +601,15 @@ namespace FairyGUI
             _stencilEraser.sortingOrder = value;
         }
 
+        //the stencil eraser draws LAST in a masked subtree, so its order is the
+        //subtree's top native slot — the instanced stream reads it as the run
+        //barrier order for container-level mask scopes (falls back to the mask's
+        //own order for the frames before the eraser exists)
+        internal int _StencilEraserOrder
+        {
+            get { return _stencilEraser != null ? _stencilEraser.sortingOrder : _renderingOrder; }
+        }
+
         /// <summary>
         /// 
         /// </summary>

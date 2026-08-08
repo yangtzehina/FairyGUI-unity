@@ -48,7 +48,23 @@ namespace FairyGUI
         /// <summary>
         /// 
         /// </summary>
-        public bool reversedMask;
+        public bool reversedMask
+        {
+            get { return _reversedMask; }
+            set
+            {
+                if (_reversedMask != value)
+                {
+                    _reversedMask = value;
+                    //flipping inverts WHERE the subtree draws (inside vs outside
+                    //the mask shape); the instanced stream's scope-barrier skip
+                    //reads it at Extract and no batching flag tracks it, so
+                    //notify directly like the mask setter below
+                    InstancedUIStream._NotifyStructure(this);
+                }
+            }
+        }
+        bool _reversedMask;
 
         List<DisplayObject> _children;
         DisplayObject _mask;
@@ -449,6 +465,12 @@ namespace FairyGUI
                 if (_mask != value)
                 {
                     _mask = value;
+                    //UpdateBatchingFlags only invalidates when BatchingRoot
+                    //FLIPS — setting/clearing a mask on a container that stays
+                    //a batching root (e.g. it also has a clipRect) would leave
+                    //the instanced stream unaware, so notify it directly (the
+                    //skip decision and the scope barrier both depend on mask)
+                    InstancedUIStream._NotifyStructure(this);
                     _flags |= Flags.BatchingRequested;
                     UpdateBatchingFlags();
                 }

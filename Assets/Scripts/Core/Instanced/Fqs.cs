@@ -402,7 +402,9 @@ namespace FairyGUI
     /// M8-1 baker: runs a replica-mode InstancedUIStream Extract on a live,
     /// already-updated container and freezes the compiled state into an FQS1
     /// blob. Strict scope (charter M8-1): components with fallback barriers,
-    /// masked/painting subtrees, atlas-font text or curve text are REFUSED —
+    /// masked/painting/GoWrapper subtrees, atlas-font text or curve text are
+    /// REFUSED (GoWrapper used to be a silent skip: the blob baked WITHOUT the
+    /// wrapped content — scope barriers made it countable, so it now refuses) —
     /// never bake something the stream could not fully express, and never
     /// bake session-dependent data (dynamic font atlas UVs, curve glyph ids).
     /// </summary>
@@ -518,10 +520,14 @@ namespace FairyGUI
 
                 if (stream.quadCount == 0)
                 { refuseReason = "empty: no instanceable content"; return null; }
+                //scope fallbacks first (they close a run too, so the generic
+                //barrier check would misattribute their reason); GoWrapper is
+                //in this count — before scope barriers it was a silent skip
+                //and the blob baked without the wrapped content
+                if (stream.lastMaskedSubtrees > 0)
+                { refuseReason = "masked/painting/GoWrapper subtree(s): content missing from the stream"; return null; }
                 if (stream.runCount > 1)
                 { refuseReason = "fallback barrier(s): non-quad topology or non-normal blend"; return null; }
-                if (stream.lastMaskedSubtrees > 0)
-                { refuseReason = "masked/painting subtree(s): content missing from the stream"; return null; }
 
                 var quads = new List<QuadInstance>();
                 var segs = new List<FqsSegSnap>();

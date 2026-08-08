@@ -34,7 +34,8 @@ InstancedValidationAll.RunBothBackends()
 无像素),套件因此一律钉在顶点流。**2026-07-31 复测不再复现**——新启动编辑器上
 buffer 路径正常,且以对照实验坐实像素来自实例 draw(关段渲染器像素消失、开回来复现,
 而叶子 `forceRenderingOff=true`,原生渲染器不参与)。全套 227 项在 buffer 后端一次
-全绿,双后端合计 **454/454**（批5b 并入后 19 套 282 项/双后端 **564/564** 复验全绿）。
+全绿,双后端合计 **454/454**（批5b 并入后 19 套 282 项/双后端 **564/564** 复验全绿；
+作用域栅栏套件并入后 20 套 297 项/双后端 **594/594**；栅栏改绝对语义（无限盒）+ 对抗评审二轮回归并入后 20 套 308 项/双后端 **616/616**，2026-08-08 实测）。
 
 **当初的触发条件未查明**,所以默认仍是顶点流(怪癖若复发,验证照样跑得起来);
 但正式验收请跑 `-ciBackend both`。
@@ -52,7 +53,7 @@ Unity -batchmode -projectPath . \
 有失败 1）。日志与报告首行是可 grep 的判定行：
 
 ```
-INSTANCED VALIDATION VERDICT: PASS pass=282 fail=0
+INSTANCED VALIDATION VERDICT: PASS pass=308 fail=0
 ```
 
 harness 注意事项（都踩过）：
@@ -72,6 +73,7 @@ harness 注意事项（都踩过）：
 |---|---|---|
 | `InstancedReassemblerSuite` | 17 | M1 quad 重组器合成数据：规范/替代索引模式、scale9 16 顶点→9 quad、UV 按包围盒角映射、90° 旋转、45° 拒绝、退化对、扇形伪阳性、色缺省、offset/flags/stride。**无场景无像素,验证栈的底座** |
 | `InstancedClipStackSuite` | 10 | M3 裁剪栈：窗口变换含 y 取反、嵌套折叠(交集)、软裁剪非对称映射 (1,2,3,4)→(1,4,3,2)、去重、逐叶 clipIndex 盖章、遮罩子树跳过、裁剪区增多而 draw 数持平 |
+| `InstancedScopeBarrierSuite` | 26 | 容器级作用域栅栏（审计缺口 + 对抗评审二轮回归）：stencil mask / painting / GoWrapper 三类三明治的**像素 z 序**（上蓝下红中间作用域，三探针）、作用域关 run 计数、运行时在 clip 容器上设 mask 触发重编译（notify 缺口回归）、root-mask 挂起认领/移除恢复（每挂起期各警一次）、**双 renderer GoWrapper**（块尾槽数学 _MaxRenderingOrder）、**fairyBatching 宿主**（eraser 走 SetRenderingOrderAll 赋序）、**相邻双作用域**（中间 run 被两栅栏夹持）、reversedMask 栅栏 + **运行时翻转通知**（属性化回归） |
 | `InstancedM7SdfSuite` | 17 | M7 SDF：圆角/描边/正圆认领、饼图/渐变/真椭圆/旋转/非均匀缩放/超 255px 半径退回原生、quad 计数、半径与描边宽打包、像素探针(内部精确/角落裁掉/描边带)、原生回退可见并按 run 交织 |
 | `M4ScenarioSuite` | 19 | 推送脏协议：隐藏/显示、滤镜开关、`graphics.enabled`、重父级即时自恢复、跨根移动单一 owner、多边形回退与再入、文本增长、dispose 恢复 |
 | `InstancedBatch1Suite` | 14 | blend 回退与 run 屏障、grayed 子树继承与精确 luma、MergedBatch/重复流互斥 |
@@ -110,7 +112,7 @@ Unity -batchmode -projectPath . \
 ```
 
 判定行 `INSTANCED PERF VERDICT: PASS|FAIL pass=N fail=M`,退出码随结果。
-**必须单独一个 Unity 进程跑**,不能接在 282 项行为套件后面——那 282 项自己就会留下
+**必须单独一个 Unity 进程跑**,不能接在 308 项行为套件后面——那 308 项自己就会留下
 GC/驱动债,而 batchmode 冷启动天然就是"新鲜会话"。
 
 方法学(针对 M8-5 那次「45% 被读成 18%」的事故):

@@ -282,6 +282,27 @@ namespace FairyGUI
             }
         }
 
+        //the last wrapped renderer draws LAST in this wrapper's native order
+        //block (SetRenderingOrder assigns ascending slots in _renderers order) -
+        //the instanced stream reads it as the run barrier order for GoWrapper
+        //scopes; canvas mode and empty wrappers consume one slot
+        internal int _MaxRenderingOrder
+        {
+            get
+            {
+                if (_canvas == null)
+                {
+                    for (int i = _renderers.Count - 1; i >= 0; i--)
+                    {
+                        Renderer r = _renderers[i].renderer;
+                        if (r != null)
+                            return r.sortingOrder;
+                    }
+                }
+                return this.renderingOrder;
+            }
+        }
+
         public override BatchElement AddToBatch(List<BatchElement> batchElements, bool force)
         {
             if (this._wrapTarget != null)
