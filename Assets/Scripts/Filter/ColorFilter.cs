@@ -36,7 +36,11 @@ namespace FairyGUI
 
                 //这里做一个优化，如果对象是图片或者动画，则通过直接修改目标的材质完成滤镜功能
                 if ((_target is Image) || (_target is MovieClip))
+                {
                     _target.graphics.ToggleKeyword("COLOR_FILTER", true);
+                    //实例流：keyword 活在原生材质上，实例 quad 载不动——已认领此叶的流必须重编译并释放它
+                    _target.InvalidateBatchingState();
+                }
                 else //否则通过绘画模式，需要建立一张RT，所以会有一定消耗
                 {
                     _target.EnterPaintingMode(1, null);
@@ -52,7 +56,10 @@ namespace FairyGUI
             if (!_target.isDisposed)
             {
                 if ((_target is Image) || (_target is MovieClip))
+                {
                     _target.graphics.ToggleKeyword("COLOR_FILTER", false);
+                    _target.InvalidateBatchingState(); //释放期滤镜已摘，通知流重新认领
+                }
                 else
                 {
                     _target.paintingGraphics.ToggleKeyword("COLOR_FILTER", false);

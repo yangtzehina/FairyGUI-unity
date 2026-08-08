@@ -100,6 +100,7 @@ public static class InstancedValidationAll
         RunSuite("scope_barriers", InstancedScopeBarrierSuite.Run);
         RunSuite("m7_sdf", InstancedM7SdfSuite.Run);
         RunSuite("m4_scenarios", M4ScenarioSuite.Run);
+        RunSuite("colorfilter_leaf", InstancedColorFilterSuite.Run);
         RunSuite("batch1", InstancedBatch1Suite.Run);
         RunSuite("batch2", InstancedBatch2Suite.Run);
         RunSuite("batch3", InstancedBatch3Suite.Run);
