@@ -3,7 +3,7 @@ using FairyGUI;
 using UnityEngine;
 
 /// <summary>
-/// Review batch-1 correctness suite (18 checks), rebuilt from commit 593d583's
+/// Review batch-1 correctness suite (23 checks), rebuilt from commit 593d583's
 /// Validation record: non-Normal blendMode leaves stay native and act as sort
 /// barriers (recompile on change, both directions), grayed accumulates down the
 /// subtree and desaturates baked instances, and the MergedBatch / duplicate
@@ -12,10 +12,23 @@ using UnityEngine;
 /// </summary>
 public static class InstancedBatch1Suite
 {
+    //two quads, one vertex disagreeing: exercises the staged-range rollback
+    //(stageCount > 0 AND skipped > 0) that single-quad fixtures never hit
+    class TwoQuadFactory : IMeshFactory
+    {
+        public void OnPopulateMesh(VertexBuffer vb)
+        {
+            vb.AddQuad(new Rect(0, 0, 30, 30), (Color32)Color.white);
+            vb.AddQuad(new Rect(40, 0, 30, 30), (Color32)Color.white);
+            vb.colors[5] = new Color32(255, 0, 0, 255);
+            vb.AddTriangles();
+        }
+    }
+
     public static string Run()
     {
         var env = new InstancedValidationEnv();
-        InstancedUIStream stream = null, s2 = null, s3 = null;
+        InstancedUIStream stream = null, s2 = null, s3 = null, s4 = null;
         try
         {
             GComponent root = env.root;
@@ -191,11 +204,98 @@ public static class InstancedBatch1Suite
                 s3.IsClaimed(gH)
                 && InstancedValidationEnv.NearRGB(env.Probe(px, rectH, 30, 20), 255, 255, 255));
 
+            //--- g19/g20: reparent across a grayed ancestor (review round 3:
+            //the InternalSetParent hook had no test — only the setter path)
+            var grayPanel = env.Sibling(240, 130, 90, 80);
+            grayPanel.grayed = true;
+            env.Step(1);
+            int ecR = s3.extractCount;
+            grayPanel.AddChild(innerG); //stream root subtree moves under gray
+            env.Step(1);
+            px = env.Capture();
+            var reGray = env.Probe(px, rectG, 30, 20);
+            env.Check($"g19.reparent under a grayed panel recompiles ({ecR}->{s3.extractCount}) and desaturates {InstancedValidationEnv.Fmt(reGray)}",
+                s3.extractCount > ecR
+                && Mathf.Abs(reGray.r - reGray.g) <= 4 && reGray.r >= 62 && reGray.r <= 90);
+            outerG.AddChild(innerG); //and back out
+            env.Step(1);
+            px = env.Capture();
+            env.Check("g20.reparent back out restores exact color",
+                InstancedValidationEnv.NearRGB(env.Probe(px, rectG, 30, 20), 255, 0, 0));
+
+            //--- g21-g23: their own host + stream ---------------------------
+            env.WarmGlyphs("AB");
+            var hostT = env.Sibling(340, 130, 200, 110);
+            GTextField gradTf = env.Text(hostT, 5, 5, 190, 40, "AB", 30);
+            GGraph rectT = env.Rect(hostT, 10, 55, 60, 30, Color.white);
+            env.Step(2);
+            s4 = new InstancedUIStream(InstancedValidationEnv.C(hostT), default, true, true);
+            env.Step(1);
+            NGraphics gTf = InstancedValidationEnv.G(gradTf);
+            NGraphics gT2 = InstancedValidationEnv.G(rectT);
+
+            //g21: per-glyph gradient text falls back at stream level, re-admits
+            bool claimedPlain = s4.IsClaimed(gTf);
+            var tfmt = gradTf.textFormat;
+            tfmt.gradientColor = new Color32[]
+            {
+                new Color32(255, 0, 0, 255), new Color32(255, 0, 0, 255),
+                new Color32(0, 0, 255, 255), new Color32(0, 0, 255, 255),
+            };
+            gradTf.textFormat = tfmt;
+            env.Step(2);
+            bool releasedOnGradient = !s4.IsClaimed(gTf) && s4.lastSkippedPairs > 0;
+            tfmt.gradientColor = null;
+            gradTf.textFormat = tfmt;
+            env.Step(2);
+            env.Check($"g21.gradient text releases (claimed {claimedPlain}->{releasedOnGradient}) and re-admits ({s4.IsClaimed(gTf)})",
+                claimedPlain && releasedOnGradient && s4.IsClaimed(gTf));
+
+            //g22: pushes on a REJECTED leaf — alpha must not recompile (review
+            //round 3 high: a tween frame was a full Extract), a mesh rebuild must
+            var rmT = rectT.shape.graphics.GetMeshFactory<RectMesh>();
+            rmT.colors = new Color32[]
+            {
+                new Color32(255, 0, 0, 255), new Color32(255, 0, 0, 255),
+                new Color32(0, 0, 255, 255), new Color32(0, 0, 255, 255),
+            };
+            rectT.shape.graphics.SetMeshDirty();
+            env.Step(2);
+            bool rejected = !s4.IsClaimed(gT2);
+            int ecT = s4.extractCount;
+            rectT.alpha = 0.5f;
+            env.Step(2);
+            bool alphaQuiet = s4.extractCount == ecT;
+            rectT.shape.graphics.SetMeshDirty();
+            env.Step(1);
+            env.Check($"g22.rejected leaf: alpha push is quiet ({alphaQuiet}), mesh push recompiles ({ecT}->{s4.extractCount})",
+                rejected && alphaQuiet && s4.extractCount > ecT);
+            rectT.alpha = 1f;
+            rmT.colors = null;
+            rectT.shape.graphics.SetMeshDirty();
+            env.Step(1);
+
+            //g23: mixed mesh in ONE leaf — the uniform quad must not leak into
+            //the stream when the gradient quad rejects the whole pair set
+            //(the staged-range rollback had no non-zero-length coverage)
+            int quadsBefore = s4.quadCount;
+            rectT.shape.graphics.meshFactory = new TwoQuadFactory();
+            rectT.shape.graphics.SetMeshDirty();
+            env.Step(2);
+            px = env.Capture();
+            env.Check($"g23.mixed mesh rejects whole leaf, staged rollback leaks nothing (quads {quadsBefore}->{s4.quadCount}) {InstancedValidationEnv.Fmt(env.Probe(px, rectT, 15, 15))}",
+                !s4.IsClaimed(gT2) && s4.lastSkippedPairs > 0
+                && s4.quadCount <= quadsBefore
+                && InstancedValidationEnv.NearRGB(env.Probe(px, rectT, 15, 15), 255, 255, 255));
+
+            s4.Dispose();
+            s4 = null;
             s3.Dispose();
             s3 = null;
         }
         finally
         {
+            if (s4 != null) s4.Dispose();
             if (s3 != null) s3.Dispose();
             if (s2 != null) s2.Dispose();
             if (stream != null) stream.Dispose();

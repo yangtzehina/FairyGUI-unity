@@ -5,7 +5,7 @@ using FairyGUI;
 using UnityEngine;
 
 /// <summary>
-/// Auto-mount suite (M8 follow-on, 26 checks). FqsAutoMount turns the manual
+/// Auto-mount suite (M8 follow-on, 27 checks). FqsAutoMount turns the manual
 /// two-line bake integration into a per-project switch: package-created
 /// components look up blobs through a pluggable provider at construction, ARM
 /// them on the container, and the enclosing stream realizes the mount at
@@ -329,8 +329,18 @@ public static class FqsAutoMountSuite
             //the bare name (pre-suffix blobs stay valid), level N appends _sN
             env.Check("c15b.scale level suffixes the blob name, level 0 stays bare",
                 FqsAutoMount.BlobFileName(chosen, 0) == FqsAutoMount.BlobFileName(chosen)
-                && FqsAutoMount.BlobFileName(chosen, 2) == FqsAutoMount.BlobFileName(chosen) + "_s2"
-                && FqsAutoMount.BlobFileName(chosen, 3).EndsWith("_" + chosen.id + "_s3"));
+                && FqsAutoMount.BlobFileName(chosen, 2) == FqsAutoMount.BlobFileName(chosen) + ".s2"
+                && FqsAutoMount.BlobFileName(chosen, 3).EndsWith("_" + chosen.id + ".s3"));
+
+            //--- c15c: provider lookup order (running level, then bare) ------
+            var cands = new List<string>();
+            FqsAutoMount.BlobFileCandidates(chosen, 0, cands);
+            bool lvl0Single = cands.Count == 1 && cands[0] == FqsAutoMount.BlobFileName(chosen);
+            FqsAutoMount.BlobFileCandidates(chosen, 2, cands);
+            env.Check("c15c.candidates try the running level first, bare name second",
+                lvl0Single && cands.Count == 2
+                && cands[0] == FqsAutoMount.BlobFileName(chosen, 2)
+                && cands[1] == FqsAutoMount.BlobFileName(chosen));
 
             //--- c16: REGRESSION — non-exported components are never looked up
             lastAsked = null;

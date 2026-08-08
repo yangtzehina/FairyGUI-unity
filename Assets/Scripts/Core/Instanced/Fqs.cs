@@ -31,8 +31,14 @@ namespace FairyGUI
         /// would fail the gate as if its CONTENT were stale, sending teams
         /// hunting for a re-export that never happened. The version bump turns
         /// that into an explicit, self-describing refusal: re-bake.
+        ///
+        /// 3 (2026-08-08): quad GENERATION semantics changed — the reassembler
+        /// now rejects non-uniform vertex colors instead of flattening them,
+        /// so a v2 blob can carry gradient quads baked with the wrong
+        /// (flattened) color that the current runtime would refuse to
+        /// produce. Same rule as above: bump so stale blobs refuse loudly.
         /// </summary>
-        public const uint FormatVersion = 2;
+        public const uint FormatVersion = 3;
 
         [Flags]
         public enum BlobFlags : uint

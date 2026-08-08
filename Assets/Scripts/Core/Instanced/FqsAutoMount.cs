@@ -90,6 +90,10 @@ namespace FairyGUI
         {
             internal byte[] bytes;      //null = miss, or a byte-deterministic refusal
             internal int leafCount;
+            internal int level;         //contentScaleLevel at fetch time: a runtime
+                                        //level change re-fetches (window resize can
+                                        //re-derive the level; cached other-level
+                                        //bytes would refuse at the gate forever)
             internal bool warned;       //non-deterministic refusal: warn once, keep trying
         }
 
@@ -177,11 +181,33 @@ namespace FairyGUI
             var b = new System.Text.StringBuilder(n.Length + 12);
             foreach (char ch in n)
                 b.Append(char.IsLetterOrDigit(ch) || ch == '_' || ch == '-' ? ch : '_');
-            b.Append('_').Append(resolved.id);
+            b.Append('_');
+            //the id is sanitized with the SAME alphabet, and the level rides
+            //behind a '.' — a character that alphabet can never produce — so
+            //the uniqueness argument stays unconditional: no (name,id,level)
+            //triple can collide with another by construction (an id ending in
+            //"_s2" under a '_' separator could, review round 3)
+            string id = resolved.id ?? "";
+            foreach (char ch in id)
+                b.Append(char.IsLetterOrDigit(ch) || ch == '_' || ch == '-' ? ch : '_');
             if (scaleLevel > 0)
-                b.Append("_s").Append(scaleLevel);
+                b.Append(".s").Append(scaleLevel);
             return b.ToString();
         }
+
+        /// <summary>
+        /// Resources names the default provider tries, in order: the running
+        /// level's suffixed set first, the bare (level-0) set second. Pure
+        /// over its inputs so the lookup order itself is testable.
+        /// </summary>
+        public static void BlobFileCandidates(PackageItem resolved, int scaleLevel, List<string> results)
+        {
+            results.Clear();
+            if (scaleLevel > 0)
+                results.Add(BlobFileName(resolved, scaleLevel));
+            results.Add(BlobFileName(resolved, 0));
+        }
+        static readonly List<string> sCandidates = new List<string>(2);
 
         static byte[] DefaultProvider(UIPackage pkg, PackageItem resolved)
         {
@@ -190,15 +216,14 @@ namespace FairyGUI
             //never render wrong-level art: the mount gate compares the baked
             //level and refuses, exactly as it would with no file at all
             string dir = "Baked/" + pkg.name + "/";
-            int level = GRoot.contentScaleLevel;
-            if (level > 0)
+            BlobFileCandidates(resolved, GRoot.contentScaleLevel, sCandidates);
+            for (int i = 0; i < sCandidates.Count; i++)
             {
-                var leveled = Resources.Load<TextAsset>(dir + BlobFileName(resolved, level) + ".fqs");
-                if (leveled != null)
-                    return leveled.bytes;
+                var ta = Resources.Load<TextAsset>(dir + sCandidates[i] + ".fqs");
+                if (ta != null)
+                    return ta.bytes;
             }
-            var ta = Resources.Load<TextAsset>(dir + BlobFileName(resolved) + ".fqs");
-            return ta != null ? ta.bytes : null;
+            return null;
         }
 
         static Entry Lookup(PackageItem item)
@@ -210,10 +235,14 @@ namespace FairyGUI
             UIPackage pkg = item.owner;
             PackageItem resolved = ResolveItem(item);
             var cache = CacheOf(pkg);
-            if (cache.items.TryGetValue(resolved.id, out var e))
+            int level = GRoot.contentScaleLevel;
+            if (cache.items.TryGetValue(resolved.id, out var e) && e.level == level)
                 return e;
+            //miss, or the runtime scale level changed since the fetch (window
+            //resize can re-derive it): cached bytes from another level would
+            //hit the mount gate forever while the right file sits on disk
             byte[] bytes = blobProvider != null ? blobProvider(pkg, resolved) : DefaultProvider(pkg, resolved);
-            e = new Entry { bytes = bytes, leafCount = FqsBlob.PeekLeafCount(bytes) };
+            e = new Entry { bytes = bytes, leafCount = FqsBlob.PeekLeafCount(bytes), level = level };
             if (e.leafCount < 0)
                 e.bytes = null; //not a current-version blob: byte-deterministic miss
             cache.items[resolved.id] = e;

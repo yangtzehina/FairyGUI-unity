@@ -85,6 +85,17 @@ namespace FairyGUIEditor
                         {
                             refused++;
                             Debug.Log($"FQS refused {pkg.name}/{item.name}: {reason}");
+                            //a refusal must not leave last version's blob
+                            //behind: it would keep mounting stale quads the
+                            //current compiler refuses to produce (the v3
+                            //gradient rule made this real — review round 3)
+                            string staleDir = $"Assets/Resources/Baked/{pkg.name}";
+                            string stale = $"{staleDir}/{FqsAutoMount.BlobFileName(contentItem, GRoot.contentScaleLevel)}.fqs.bytes";
+                            if (File.Exists(stale))
+                            {
+                                File.Delete(stale);
+                                Debug.LogWarning($"FQS deleted stale blob for refused {pkg.name}/{item.name}: {stale}");
+                            }
                             continue;
                         }
                         string dir = $"Assets/Resources/Baked/{pkg.name}";
@@ -106,6 +117,29 @@ namespace FairyGUIEditor
                             Debug.LogWarning($"FQS bake threw on {pkg.name}/{item.name}: {e.Message}");
                         }
                     }
+
+                    //orphan report (no deletion): renamed/deleted/un-exported
+                    //components leave files behind that ship with Resources
+                    //forever and read as "baked" — list anything not matching
+                    //a current exported component at ANY level
+                    string pkgDir = $"Assets/Resources/Baked/{pkg.name}";
+                    if (Directory.Exists(pkgDir))
+                    {
+                        var known = new System.Collections.Generic.HashSet<string>();
+                        foreach (var it2 in pkg.GetItems())
+                            if (it2.type == PackageItemType.Component && it2.exported)
+                                known.Add(FqsAutoMount.BlobFileName(FqsAutoMount.ResolveItem(it2)));
+                        foreach (var file in Directory.GetFiles(pkgDir, "*.fqs.bytes"))
+                        {
+                            string baseName = Path.GetFileName(file);
+                            baseName = baseName.Substring(0, baseName.Length - ".fqs.bytes".Length);
+                            int dot = baseName.IndexOf(".s");
+                            if (dot >= 0)
+                                baseName = baseName.Substring(0, dot); //strip the level suffix
+                            if (!known.Contains(baseName))
+                                Debug.LogWarning($"FQS orphan blob (no matching exported component): {file}");
+                        }
+                    }
                 }
             }
             finally
@@ -119,7 +153,17 @@ namespace FairyGUIEditor
             if (viewsWritten > 0)
                 SessionState.SetBool("Fqs.ViewsPending", true);
             AssetDatabase.Refresh();
-            Debug.Log($"FQS bake: {baked} blobs baked, {refused} refused, {viewsWritten} views written, {pkgs.Count} packages");
+            int bakeLevel = GRoot.contentScaleLevel;
+            //the level names the OUTPUT FILES (level>0 gets an .sN suffix a
+            //level-0 device never loads) — an oversized editor Game view
+            //silently baking an _s1 set was indistinguishable from "never
+            //baked" on phones (review round 3), so the level is always echoed
+            //and a non-zero one warns
+            string summary = $"FQS bake: {baked} blobs baked, {refused} refused, {viewsWritten} views written, {pkgs.Count} packages, contentScaleLevel={bakeLevel}";
+            if (bakeLevel > 0)
+                Debug.LogWarning(summary + $" — output carries the .s{bakeLevel} suffix; level-0 devices will NOT load it. Shrink the Game view (or set UIContentScaler.scaleLevel = 0 and reload packages) for the base set.");
+            else
+                Debug.Log(summary);
             return new Vector3Int(baked, refused, viewsWritten);
         }
 

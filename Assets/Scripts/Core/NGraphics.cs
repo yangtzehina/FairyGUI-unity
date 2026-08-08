@@ -47,7 +47,7 @@ namespace FairyGUI
                 if (_blendMode != value)
                 {
                     _blendMode = value;
-                    var s = _instancedBy != null ? _instancedBy : _lastInstancedBy;
+                    var s = _instancedBy != null ? _instancedBy : _LiveReadmitter();
                     if (s != null)
                         s._MarkStructureDirty();
                 }
@@ -119,6 +119,17 @@ namespace FairyGUI
         //kept after release so re-admission conditions (enabled=true) can still
         //reach a stream; stale marks only cost one redundant recompile
         internal InstancedUIStream _lastInstancedBy;
+
+        //the re-admission channel must not outlive its stream: Dispose flips
+        //_inPlace off, so a dead reference is dropped here — pushes stop
+        //dirtying a dead object and the field stops pinning its object graph
+        //(review round 3: a leaf migrated between streams kept the OLD one)
+        InstancedUIStream _LiveReadmitter()
+        {
+            if (_lastInstancedBy != null && !_lastInstancedBy._inPlace)
+                _lastInstancedBy = null;
+            return _lastInstancedBy;
+        }
 
         internal void _SetInstancedOwner(InstancedUIStream stream)
         {
@@ -563,7 +574,7 @@ namespace FairyGUI
                     //enabled is an instancing admission condition (review M10/M14):
                     //push so the stream re-evaluates membership; after a release
                     //only _lastInstancedBy still knows who might re-admit us
-                    var s = _instancedBy != null ? _instancedBy : _lastInstancedBy;
+                    var s = _instancedBy != null ? _instancedBy : _LiveReadmitter();
                     if (s != null)
                         s._MarkStructureDirty();
                 }
@@ -676,10 +687,12 @@ namespace FairyGUI
             mesh.SetColors(vb.colors);
             vb.End();
             _contentVersion++;
-            if (_instancedBy != null)
-                _instancedBy._QueueLeafUpdate(this);
-            else if (_lastInstancedBy != null)
-                _lastInstancedBy._MarkStructureDirty(); //re-admission (e.g. topology became quad again)
+            //NO re-admission push here: a uniform tint/alpha multiply can
+            //never turn a rejected (non-uniform color / non-quad) mesh
+            //claimable, and routing it through _lastInstancedBy made every
+            //tween frame a full recompile for stamped-rejected leaves
+            //(review round 3, high). UpdateMeshNow keeps the channel: a mesh
+            //REBUILD can genuinely change topology and colors.
         }
 
         void ChangeAlpha(float value)
@@ -715,10 +728,12 @@ namespace FairyGUI
             mesh.SetColors(vb.colors);
             vb.End();
             _contentVersion++;
-            if (_instancedBy != null)
-                _instancedBy._QueueLeafUpdate(this);
-            else if (_lastInstancedBy != null)
-                _lastInstancedBy._MarkStructureDirty(); //re-admission (e.g. topology became quad again)
+            //NO re-admission push here: a uniform tint/alpha multiply can
+            //never turn a rejected (non-uniform color / non-quad) mesh
+            //claimable, and routing it through _lastInstancedBy made every
+            //tween frame a full recompile for stamped-rejected leaves
+            //(review round 3, high). UpdateMeshNow keeps the channel: a mesh
+            //REBUILD can genuinely change topology and colors.
         }
 
         /// <summary>
@@ -1026,7 +1041,7 @@ namespace FairyGUI
                 _curveGlyphs.Clear();
             if (_instancedBy != null)
                 _instancedBy._QueueLeafUpdate(this);
-            else if (_lastInstancedBy != null)
+            else if (_LiveReadmitter() != null)
                 _lastInstancedBy._MarkStructureDirty(); //re-admission (e.g. topology became quad again)
 
             if (_texture == null || _meshFactory == null)

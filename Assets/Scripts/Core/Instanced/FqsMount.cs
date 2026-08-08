@@ -85,8 +85,9 @@ namespace FairyGUI
             if (bakedLevel != GRoot.contentScaleLevel)
             {
                 Warn($"FQS mount refused: blob baked at contentScaleLevel {bakedLevel}, running at {GRoot.contentScaleLevel}. "
-                    + "Bake a set for this level too (set the Game view to a resolution that yields it, then Tools/FairyGUI/Bake Packages (FQS)) — "
-                    + "per-level blobs coexist via the _s{N} filename suffix and the default provider picks the running level.");
+                    + $"Bake a set for this level too: UIContentScaler.scaleLevel = {GRoot.contentScaleLevel}, reload packages, run Tools/FairyGUI/Bake Packages (FQS) "
+                    + "(no Game view resizes in between — a screen-size event re-derives the level). "
+                    + $"Per-level blobs coexist via the .s{GRoot.contentScaleLevel} filename suffix; the default provider picks the running level.");
                 return false;
             }
 

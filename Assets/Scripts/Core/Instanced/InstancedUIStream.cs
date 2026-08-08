@@ -242,11 +242,26 @@ namespace FairyGUI
                 {
                     if (ReferenceEquals(p, changed))
                     {
-                        s._MarkStructureDirty();
+                        //recompile only when the effective root grayed actually
+                        //changed — a plain reparent (window hide/show is
+                        //RemoveChild+AddChild) between non-gray parents would
+                        //otherwise pay a full Extract for nothing
+                        if (_ChainGrayed(s._container) != s._lastRootGrayed)
+                            s._MarkStructureDirty();
                         break;
                     }
                 }
             }
+        }
+
+        //own grayed OR any ancestor's — the native pass gets the same value
+        //through context accumulation
+        static bool _ChainGrayed(Container c)
+        {
+            for (DisplayObject a = c; a != null; a = a.parent)
+                if (a.grayed)
+                    return true;
+            return false;
         }
 
         class Segment
@@ -390,7 +405,7 @@ namespace FairyGUI
 
         Container _container;
         bool _sortAdjacency;
-        bool _inPlace;
+        internal bool _inPlace;
         bool _structureDirty;
         readonly List<NGraphics> _dirtyLeaves = new List<NGraphics>();
         readonly HashSet<NGraphics> _dirtyLeafSet = new HashSet<NGraphics>();
@@ -420,6 +435,11 @@ namespace FairyGUI
         int _skippedPairs;
         int _maskedSubtrees;
         bool _rootMaskWarned;
+        //root grayed as of the last Extract (own flag OR any ancestor):
+        //_NotifyDescendantStreams compares against it so ancestry events that
+        //do not change the effective value (reparent between non-gray parents)
+        //skip the full recompile
+        bool _lastRootGrayed;
         //transform slots (batch 3, design §4.2 tier 1): interior containers that
         //keep moving get promoted to a slot — their subtree quads are baked in
         //SLOT-local space and the shader multiplies by the slot matrix, so a
@@ -919,10 +939,8 @@ namespace FairyGUI
                     //grayed inherits from ABOVE the stream root too (native
                     //content gets it via context accumulation) — recompiles
                     //re-read the chain, _NotifyDescendantStreams triggers them
-                    bool rootGrayed = _container.grayed;
-                    if (_inPlace && !rootGrayed)
-                        for (DisplayObject a = _container.parent; a != null; a = a.parent)
-                            if (a.grayed) { rootGrayed = true; break; }
+                    bool rootGrayed = _inPlace ? _ChainGrayed(_container) : _container.grayed;
+                    _lastRootGrayed = rootGrayed;
                     ExtractContainer(_container, _rootWorldToLocal, 0, rootGrayed, 0);
                 }
 
@@ -1779,8 +1797,13 @@ namespace FairyGUI
                     //polygon) must react to content pushes exactly like a leaf
                     //that was claimed once and then released — otherwise the
                     //same leaf re-admits or not depending on its history.
-                    //In-place streams only: replica (bake) leaves are throwaway
-                    if (_inPlace && p.graphics._instancedBy == null && p.graphics._lastInstancedBy == null)
+                    //Unconditional overwrite: the CURRENT rejecter is the only
+                    //stream whose extraction covers this leaf, so a leaf moved
+                    //from stream A to B re-homes on B's first recompile
+                    //(first-writer-wins left it dirtying A forever — review
+                    //round 3). In-place only: replica (bake) leaves are
+                    //throwaway
+                    if (_inPlace && p.graphics._instancedBy == null)
                         p.graphics._lastInstancedBy = this;
                 }
                 else
