@@ -137,34 +137,14 @@ namespace FairyGUIEditor
             string report;
             try
             {
-                //the editor assembly cannot reference Assembly-CSharp at compile
-                //time (predefined assemblies are one-way), so bind by name
-                Type t = Type.GetType("InstancedValidationAll, Assembly-CSharp");
-                if (t == null)
-                {
-                    Fail("InstancedValidationAll not found in Assembly-CSharp");
-                    return;
-                }
+                //direct calls: the suites live in FairyGUI.Validation now
+                //(referenced by this asmdef) — name-bound reflection against
+                //Assembly-CSharp silently broke when they moved
                 string backend = SessionState.GetString(kBackendKey, "vertex");
-                MethodInfo m;
-                object[] argv;
                 if (backend == "both")
-                {
-                    m = t.GetMethod("RunBothBackends", BindingFlags.Public | BindingFlags.Static);
-                    argv = null;
-                }
+                    report = InstancedValidationAll.RunBothBackends();
                 else
-                {
-                    m = t.GetMethod("RunOn", BindingFlags.Public | BindingFlags.Static);
-                    argv = new object[] { backend == "vertex" };
-                }
-                if (m == null)
-                {
-                    Fail("InstancedValidationAll entry point not found");
-                    return;
-                }
-                Debug.Log("InstancedValidationCI: backend = " + backend);
-                report = (string)m.Invoke(null, argv);
+                    report = InstancedValidationAll.RunOn(backend == "vertex");
             }
             catch (Exception e)
             {

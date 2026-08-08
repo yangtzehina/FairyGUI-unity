@@ -105,19 +105,11 @@ namespace FairyGUIEditor
             string report;
             try
             {
-                Type t = Type.GetType("InstancedPerfRatioBench, Assembly-CSharp");
-                if (t == null)
-                {
-                    Fail("InstancedPerfRatioBench not found in Assembly-CSharp");
-                    return;
-                }
-                MethodInfo m = t.GetMethod("Run", BindingFlags.Public | BindingFlags.Static);
-                if (m == null)
-                {
-                    Fail("InstancedPerfRatioBench.Run() not found");
-                    return;
-                }
-                report = (string)m.Invoke(null, null);
+                //direct call: the suites moved from Assembly-CSharp into the
+                //FairyGUI.Validation asmdef (UTF migration) and the old
+                //name-bound reflection kept "working" right up to a runtime
+                //miss the compile could have caught — this gate found it
+                report = InstancedPerfRatioBench.Run();
             }
             catch (Exception e)
             {
