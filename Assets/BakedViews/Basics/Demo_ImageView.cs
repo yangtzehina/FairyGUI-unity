@@ -5,6 +5,7 @@ namespace FairyGUI.Baked.Basics
     public partial class Demo_ImageView
     {
         public readonly global::FairyGUI.GComponent com;
+        public const ulong BakedSourceHash = 0x668D00CB44B58CDDUL;
 
         public readonly global::FairyGUI.GImage m_n6;
         public readonly global::FairyGUI.GImage m_n7;
@@ -22,6 +23,9 @@ namespace FairyGUI.Baked.Basics
         public Demo_ImageView(global::FairyGUI.GComponent c)
         {
             com = c;
+            var __pi = c.packageItem;
+            if (__pi != null && __pi.owner != null && __pi.owner.sourceHash != BakedSourceHash)
+                global::UnityEngine.Debug.LogWarning("FQS view Demo_ImageView is stale: package 'Basics' changed since generation — child indices/types may be wrong. Re-bake via Tools/FairyGUI/Bake Packages (FQS).");
             m_n6 = (global::FairyGUI.GImage)c.GetChildAt(0);
             m_n7 = (global::FairyGUI.GImage)c.GetChildAt(1);
             m_n8 = (global::FairyGUI.GImage)c.GetChildAt(2);

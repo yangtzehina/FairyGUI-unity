@@ -5,6 +5,7 @@ namespace FairyGUI.Baked.Basics
     public partial class WindowAView
     {
         public readonly global::FairyGUI.GComponent com;
+        public const ulong BakedSourceHash = 0x668D00CB44B58CDDUL;
 
         public readonly global::FairyGUI.GLabel m_frame;
         public readonly global::FairyGUI.GComboBox m_n2;
@@ -14,6 +15,9 @@ namespace FairyGUI.Baked.Basics
         public WindowAView(global::FairyGUI.GComponent c)
         {
             com = c;
+            var __pi = c.packageItem;
+            if (__pi != null && __pi.owner != null && __pi.owner.sourceHash != BakedSourceHash)
+                global::UnityEngine.Debug.LogWarning("FQS view WindowAView is stale: package 'Basics' changed since generation — child indices/types may be wrong. Re-bake via Tools/FairyGUI/Bake Packages (FQS).");
             m_frame = (global::FairyGUI.GLabel)c.GetChildAt(0);
             m_n2 = (global::FairyGUI.GComboBox)c.GetChildAt(1);
             m_n5 = (global::FairyGUI.GButton)c.GetChildAt(2);

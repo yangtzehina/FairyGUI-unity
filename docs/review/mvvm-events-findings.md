@@ -162,3 +162,10 @@ V7 的回归测试崩了三次编辑器才让我看清递归的真正来源，�
 `eval "return BinderReentrancyCheck.Run();"` 跑完，随 `InstancedValidationAll` 一并执行。
 **V1/V6 11 项 + V7/V8 7 项 = 18 项**，全绿；全量门禁双后端 522/522。
 后续任何评审修复都应附带同等验证。
+
+**2026-08-08 补遗：事件层语义断言已落盘。** e96f994 的 7 项断言此前只存在于
+提交信息（正是 E1a 得以溜进来的缺口——本文件第一条教训的漏网者），现重建为
+`Validation/EventSemanticsSuite.cs` 10 项（去重、派发中增删走快照、
+capture→target→bubble、嵌套异型/同型派发、isDispatching 计数器语义、派发中
+RemoveEventListeners、context 传递、未知类型查询），随全量门禁双后端执行。
+事件层自此与 MVVM 层同等待遇：语义契约有常设回归门。

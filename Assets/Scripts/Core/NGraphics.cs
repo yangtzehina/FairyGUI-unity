@@ -995,6 +995,13 @@ namespace FairyGUI
             _meshDirty = false;
             _colorStale = _tintStale = false; //rebuild bakes colors fresh
             _contentVersion++;
+            //the curve side table clears on EVERY rebuild, right here — not
+            //(only) in CurveBaseFont.StartDraw: that spot relied on "the next
+            //font is also a CurveBaseFont". Switching a field to Dynamic/
+            //BitmapFont skipped the clear and the instanced stream kept
+            //emitting the OLD text's glyphs from the stale table
+            if (_curveGlyphs != null)
+                _curveGlyphs.Clear();
             if (_instancedBy != null)
                 _instancedBy._QueueLeafUpdate(this);
             else if (_lastInstancedBy != null)

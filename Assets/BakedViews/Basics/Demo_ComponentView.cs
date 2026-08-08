@@ -5,6 +5,7 @@ namespace FairyGUI.Baked.Basics
     public partial class Demo_ComponentView
     {
         public readonly global::FairyGUI.GComponent com;
+        public const ulong BakedSourceHash = 0x668D00CB44B58CDDUL;
 
         public readonly global::FairyGUI.GTextField m_n0;
         public readonly global::FairyGUI.GComponent m_n12;
@@ -16,6 +17,9 @@ namespace FairyGUI.Baked.Basics
         public Demo_ComponentView(global::FairyGUI.GComponent c)
         {
             com = c;
+            var __pi = c.packageItem;
+            if (__pi != null && __pi.owner != null && __pi.owner.sourceHash != BakedSourceHash)
+                global::UnityEngine.Debug.LogWarning("FQS view Demo_ComponentView is stale: package 'Basics' changed since generation — child indices/types may be wrong. Re-bake via Tools/FairyGUI/Bake Packages (FQS).");
             m_n0 = (global::FairyGUI.GTextField)c.GetChildAt(0);
             m_n12 = (global::FairyGUI.GComponent)c.GetChildAt(1);
             m_n13 = (global::FairyGUI.GComponent)c.GetChildAt(2);

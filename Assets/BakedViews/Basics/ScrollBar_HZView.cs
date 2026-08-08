@@ -5,6 +5,7 @@ namespace FairyGUI.Baked.Basics
     public partial class ScrollBar_HZView
     {
         public readonly global::FairyGUI.GComponent com;
+        public const ulong BakedSourceHash = 0x668D00CB44B58CDDUL;
 
         public readonly global::FairyGUI.GImage m_n0;
         public readonly global::FairyGUI.GGraph m_bar;
@@ -15,6 +16,9 @@ namespace FairyGUI.Baked.Basics
         public ScrollBar_HZView(global::FairyGUI.GComponent c)
         {
             com = c;
+            var __pi = c.packageItem;
+            if (__pi != null && __pi.owner != null && __pi.owner.sourceHash != BakedSourceHash)
+                global::UnityEngine.Debug.LogWarning("FQS view ScrollBar_HZView is stale: package 'Basics' changed since generation — child indices/types may be wrong. Re-bake via Tools/FairyGUI/Bake Packages (FQS).");
             m_n0 = (global::FairyGUI.GImage)c.GetChildAt(0);
             m_bar = (global::FairyGUI.GGraph)c.GetChildAt(1);
             m_arrow1 = (global::FairyGUI.GButton)c.GetChildAt(2);

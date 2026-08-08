@@ -5,6 +5,7 @@ namespace FairyGUI.Baked.Basics
     public partial class Demo_ComboBoxView
     {
         public readonly global::FairyGUI.GComponent com;
+        public const ulong BakedSourceHash = 0x668D00CB44B58CDDUL;
 
         public readonly global::FairyGUI.GComboBox m_n1;
         public readonly global::FairyGUI.GComboBox m_n4;
@@ -14,6 +15,9 @@ namespace FairyGUI.Baked.Basics
         public Demo_ComboBoxView(global::FairyGUI.GComponent c)
         {
             com = c;
+            var __pi = c.packageItem;
+            if (__pi != null && __pi.owner != null && __pi.owner.sourceHash != BakedSourceHash)
+                global::UnityEngine.Debug.LogWarning("FQS view Demo_ComboBoxView is stale: package 'Basics' changed since generation — child indices/types may be wrong. Re-bake via Tools/FairyGUI/Bake Packages (FQS).");
             m_n1 = (global::FairyGUI.GComboBox)c.GetChildAt(0);
             m_n4 = (global::FairyGUI.GComboBox)c.GetChildAt(1);
             m_n5 = (global::FairyGUI.GComboBox)c.GetChildAt(2);
