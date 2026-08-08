@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The durable desktop compile gate (AGENTS.md): a fast C# syntax pass over
+       the runtime sources BEFORE Unity compiles them. netstandard2.1 +
+       UnityEngine.Modules mirrors Unity's compilation closely enough to catch
+       syntax and obvious API errors in seconds.
+
+         ~/.dotnet/dotnet build -c Release tools/DesktopGate                 # plain
+         ~/.dotnet/dotnet build -c Release tools/DesktopGate -p:ToLua=true  # FAIRYGUI_TOLUA variant
+
+       The ToLua variant compiles the Lua-facing surface against minimal
+       LuaInterface stubs (LuaStubs.cs) — the event-layer rewrite ported that
+       surface blind, and nothing else on this machine can compile it.
+       The define chain must stay COMPLETE: dropping UNITY_2017_1_OR_NEWER
+       walks into the EventType.scrollWheel obsolete-error branch (CS0619). -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <DefineConstants>UNITY_5_6_OR_NEWER;UNITY_2017_1_OR_NEWER;UNITY_2017_4_OR_NEWER;UNITY_2018_1_OR_NEWER;UNITY_2018_3_OR_NEWER;UNITY_2019_1_OR_NEWER;UNITY_2019_4_OR_NEWER;UNITY_2020_1_OR_NEWER;UNITY_2021_1_OR_NEWER;UNITY_2021_2_OR_NEWER;UNITY_2021_3_OR_NEWER</DefineConstants>
+    <NoWarn>CS0649;CS0414;CS1691</NoWarn>
+    <AssemblyName>FairyGUI.DesktopGate</AssemblyName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(ToLua)' == 'true'">
+    <DefineConstants>$(DefineConstants);FAIRYGUI_TOLUA</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="UnityEngine.Modules" Version="2021.3.33" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../../Assets/Scripts/**/*.cs" />
+    <Compile Include="../../Assets/MVVM/**/*.cs" />
+    <Compile Include="LuaStubs.cs" Condition="'$(ToLua)' == 'true'" />
+  </ItemGroup>
+</Project>
